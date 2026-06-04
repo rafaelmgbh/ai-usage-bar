@@ -5,6 +5,8 @@
 A tiny native macOS **menu bar** app that shows your **Claude Code** and **Codex** plan
 rate-limit windows in real time, with reset countdowns.
 
+![AI Usage Bar](docs/screenshot.png)
+
 ```
 Claude 5h▕██░░░░░▏ 7d▕█░░░░░░▏
 Codex  5h▕███░░░░▏ 7d▕░░░░░░░▏

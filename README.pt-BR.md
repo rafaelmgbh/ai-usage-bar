@@ -5,6 +5,8 @@
 App nativo de **menu bar** do macOS que mostra, em tempo real, as janelas de rate-limit dos
 planos **Claude Code** e **Codex**, com countdown de reset.
 
+![AI Usage Bar](docs/screenshot.png)
+
 ```
 Claude 5h▕██░░░░░▏ 7d▕█░░░░░░▏
 Codex  5h▕███░░░░▏ 7d▕░░░░░░░▏
