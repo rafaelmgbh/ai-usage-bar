@@ -1,0 +1,6 @@
+.build/
+*.app
+.DS_Store
+*.xcuserstate
+.swiftpm/
+Package.resolved
