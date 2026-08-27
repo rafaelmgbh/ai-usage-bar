@@ -21,8 +21,25 @@ enum CodexProbe {
     static let authPath = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/auth.json")
 
     static func fetch() async throws -> CodexUsage {
-        let (token, account) = try readAuth()
+        var auth = try CodexAuth.load()
 
+        // JWT já vencido → renova antes de gastar a chamada.
+        if CodexAuth.isExpired(auth.accessToken), !auth.refreshToken.isEmpty {
+            auth = try await CodexAuth.refresh()
+        }
+
+        do {
+            return try await request(token: auth.accessToken, account: auth.accountID)
+        } catch ProbeError.unauthorized {
+            // Servidor recusou mesmo com JWT aparentemente válido (revogado,
+            // relógio fora, campo exp ausente): tenta um refresh e repete 1×.
+            guard !auth.refreshToken.isEmpty else { throw ProbeError.unauthorized }
+            let renewed = try await CodexAuth.refresh()
+            return try await request(token: renewed.accessToken, account: renewed.accountID)
+        }
+    }
+
+    private static func request(token: String, account: String) async throws -> CodexUsage {
         var req = URLRequest(url: endpoint)
         req.httpMethod = "GET"
         req.timeoutInterval = 20
@@ -69,28 +86,6 @@ enum CodexProbe {
             fiveHourResetEpoch: resetEpoch(primary),
             weeklyResetEpoch: resetEpoch(secondary)
         )
-    }
-
-    // MARK: - Auth
-
-    private static func readAuth() throws -> (token: String, account: String) {
-        guard let data = FileManager.default.contents(atPath: authPath) else {
-            throw ProbeError.transport("sem ~/.codex/auth.json — rode `codex`")
-        }
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ProbeError.transport("auth.json ilegível")
-        }
-        let toks = (root["tokens"] as? [String: Any]) ?? root
-        guard
-            let token = (toks["access_token"] as? String) ?? (root["access_token"] as? String),
-            !token.isEmpty
-        else {
-            throw ProbeError.transport("sem login Codex — rode `codex`")
-        }
-        let account = (toks["account_id"] as? String)
-            ?? (root["account_id"] as? String)
-            ?? (toks["accountId"] as? String) ?? ""
-        return (token, account)
     }
 
     // MARK: - Parsing defensivo
