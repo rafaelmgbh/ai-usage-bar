@@ -1,7 +1,8 @@
 import Foundation
+import AiUsageCore
 
 /// Resultado do probe — as duas janelas de rate-limit unificado da Anthropic.
-struct Usage {
+struct Usage: Sendable {
     /// utilização 0…100 (%).
     let fiveHourPercent: Double
     let sevenDayPercent: Double
@@ -46,10 +47,13 @@ enum UsageProbe {
     static let h7Util = "anthropic-ratelimit-unified-7d-utilization"
     static let h7Reset = "anthropic-ratelimit-unified-7d-reset"
 
-    static func fetch() async throws -> Usage {
+    /// Probe de UMA conta. O token vem do item de Keychain daquela conta, e os
+    /// headers de rate-limit que voltam são da conta que autenticou — a
+    /// atribuição do consumo é garantida pelo servidor, não por heurística nossa.
+    static func fetch(account: ClaudeAccount) async throws -> Usage {
         let creds: Keychain.Credentials
         do {
-            creds = try Keychain.readCredentials()
+            creds = try Keychain.readCredentials(service: account.keychainService)
         } catch {
             throw ProbeError.keychain("\(error)")
         }

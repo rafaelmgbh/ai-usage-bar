@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import AiUsageCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -20,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let btn = statusItem.button {
             btn.imagePosition = .imageOnly
-            btn.image = Self.placeholderImage()
+            btn.image = Self.placeholderImage(labels: model.claude.map(\.label))
             btn.toolTip = "carregando…"
             btn.action = #selector(togglePopover)
             btn.target = self
@@ -57,49 +58,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Menubar (2 linhas: Claude + Codex)
+    // MARK: - Menubar (uma linha por conta Claude + uma do Codex)
 
     private func updateStatusItem() {
         guard let btn = statusItem.button else { return }
 
-        let claudeRow = Row(
-            brand: "Claude",
-            cells: [("5h", model.usage?.fiveHourPercent),
-                    ("7d", model.usage?.sevenDayPercent)],
-            dim: model.errorText != nil
-        )
-        let codexRow = Row(
+        // Uma linha por conta, rotulada com o label dela: o número na menubar
+        // nunca aparece sem dono.
+        var rows = model.claude.map { acc in
+            Row(brand: acc.label,
+                cells: [("5h", acc.usage?.fiveHourPercent),
+                        ("7d", acc.usage?.sevenDayPercent)],
+                dim: acc.error != nil)
+        }
+        rows.append(Row(
             brand: "Codex",
             cells: [("5h", model.codexUsage?.fiveHourPercent),
                     ("7d", model.codexUsage?.weeklyPercent)],
             dim: model.codexError != nil
-        )
+        ))
 
-        btn.image = Self.drawStatusImage(rows: [claudeRow, codexRow])
+        btn.image = Self.drawStatusImage(rows: rows)
         btn.toolTip = buildTooltip()
     }
 
     private func buildTooltip() -> String {
         var out = [String]()
+        let pad = max(model.claude.map(\.label.count).max() ?? 0, "Codex".count)
 
-        if let u = model.usage {
-            var l = String(format: "Claude  5h %.0f%% %@  ·  7d %.0f%% %@",
-                           u.fiveHourPercent, resetText(u.fiveHourResetEpoch),
-                           u.sevenDayPercent, resetText(u.sevenDayResetEpoch))
-            if let e = model.errorText { l += "   ⚠︎ \(short(e))" }
-            out.append(l)
-        } else if let e = model.errorText {
-            out.append("Claude  ⚠︎ \(short(e))")
+        for acc in model.claude {
+            let name = acc.label.padding(toLength: pad, withPad: " ", startingAt: 0)
+            if let u = acc.usage {
+                var l = String(format: "%@  5h %.0f%% %@  ·  7d %.0f%% %@",
+                               name,
+                               u.fiveHourPercent, resetText(u.fiveHourResetEpoch),
+                               u.sevenDayPercent, resetText(u.sevenDayResetEpoch))
+                if let e = acc.error { l += "   ⚠︎ \(short(e))" }
+                out.append(l)
+            } else if let e = acc.error {
+                out.append("\(name)  ⚠︎ \(short(e))")
+            }
         }
 
+        let codexName = "Codex".padding(toLength: pad, withPad: " ", startingAt: 0)
         if let c = model.codexUsage {
-            var l = String(format: "Codex   5h %.0f%% %@  ·  7d %.0f%% %@",
+            var l = String(format: "%@  5h %.0f%% %@  ·  7d %.0f%% %@",
+                           codexName,
                            c.fiveHourPercent, resetText(c.fiveHourResetEpoch),
                            c.weeklyPercent, resetText(c.weeklyResetEpoch))
             if let e = model.codexError { l += "   ⚠︎ \(short(e))" }
             out.append(l)
         } else if let e = model.codexError {
-            out.append("Codex   ⚠︎ \(short(e))")
+            out.append("\(codexName)  ⚠︎ \(short(e))")
         }
 
         return out.isEmpty ? "carregando…" : out.joined(separator: "\n")
@@ -117,40 +127,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dim: Bool
     }
 
-    private static let brandFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
-    private static let labelFont = NSFont.systemFont(ofSize: 9, weight: .medium)
-    private static let barW: CGFloat = 28
-    private static let barH: CGFloat = 7
-    private static let gapSmall: CGFloat = 3   // rótulo→barra
-    private static let gapBig: CGFloat = 7      // entre colunas
+    /// Tamanhos do desenho. A imagem da menubar tem altura fixa (24pt), então
+    /// com 3+ linhas a fonte e a barra precisam encolher pra caber. Com 1 ou 2
+    /// contas nada muda em relação ao layout original.
+    private struct Metrics {
+        let brandFont: NSFont
+        let labelFont: NSFont
+        let barW: CGFloat
+        let barH: CGFloat
+        let gapSmall: CGFloat   // rótulo→barra
+        let gapBig: CGFloat     // entre colunas
+
+        static func forRows(_ n: Int) -> Metrics {
+            if n <= 2 {
+                return Metrics(brandFont: .systemFont(ofSize: 10, weight: .semibold),
+                               labelFont: .systemFont(ofSize: 9, weight: .medium),
+                               barW: 28, barH: 7, gapSmall: 3, gapBig: 7)
+            }
+            return Metrics(brandFont: .systemFont(ofSize: 8, weight: .semibold),
+                           labelFont: .systemFont(ofSize: 7, weight: .medium),
+                           barW: 26, barH: 5, gapSmall: 2, gapBig: 5)
+        }
+    }
 
     private static func textWidth(_ s: String, _ f: NSFont) -> CGFloat {
         (s as NSString).size(withAttributes: [.font: f]).width
     }
 
-    private static func placeholderImage() -> NSImage {
-        drawStatusImage(rows: [
-            Row(brand: "Claude", cells: [("5h", nil), ("7d", nil)], dim: true),
-            Row(brand: "Codex", cells: [("5h", nil), ("7d", nil)], dim: true)
-        ])
+    private static func placeholderImage(labels: [String]) -> NSImage {
+        let rows = (labels + ["Codex"]).map {
+            Row(brand: $0, cells: [("5h", nil), ("7d", nil)], dim: true)
+        }
+        return drawStatusImage(rows: rows)
     }
 
     /// Desenha N linhas (marca + células rotuladas), colunas alinhadas verticalmente.
     private static func drawStatusImage(rows: [Row]) -> NSImage {
         let h: CGFloat = 24
         let rowH = h / CGFloat(max(rows.count, 1))
+        let m = Metrics.forRows(rows.count)
 
-        let brandColW = rows.map { textWidth($0.brand, brandFont) }.max() ?? 0
+        let brandColW = rows.map { textWidth($0.brand, m.brandFont) }.max() ?? 0
         let nCols = rows.map { $0.cells.count }.max() ?? 0
         var labelColW = [CGFloat](repeating: 0, count: nCols)
         for r in rows {
             for (j, c) in r.cells.enumerated() {
-                labelColW[j] = max(labelColW[j], textWidth(c.label, labelFont))
+                labelColW[j] = max(labelColW[j], textWidth(c.label, m.labelFont))
             }
         }
 
         var width: CGFloat = 1 + brandColW
-        for j in 0..<nCols { width += gapBig + labelColW[j] + gapSmall + barW }
+        for j in 0..<nCols { width += m.gapBig + labelColW[j] + m.gapSmall + m.barW }
         width += 3
 
         return NSImage(size: NSSize(width: width, height: h), flipped: false) { _ in
@@ -159,23 +186,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 // marca
                 let bColor = r.dim ? NSColor.labelColor.withAlphaComponent(0.4) : NSColor.labelColor
-                let bAttrs: [NSAttributedString.Key: Any] = [.font: brandFont, .foregroundColor: bColor]
+                let bAttrs: [NSAttributedString.Key: Any] = [.font: m.brandFont, .foregroundColor: bColor]
                 let bSize = (r.brand as NSString).size(withAttributes: bAttrs)
                 (r.brand as NSString).draw(at: NSPoint(x: 1, y: midY - bSize.height / 2), withAttributes: bAttrs)
 
                 var x: CGFloat = 1 + brandColW
                 let lColor = r.dim ? NSColor.secondaryLabelColor.withAlphaComponent(0.4) : NSColor.secondaryLabelColor
-                let lAttrs: [NSAttributedString.Key: Any] = [.font: labelFont, .foregroundColor: lColor]
+                let lAttrs: [NSAttributedString.Key: Any] = [.font: m.labelFont, .foregroundColor: lColor]
                 for j in 0..<nCols {
-                    x += gapBig
+                    x += m.gapBig
                     let cell: (label: String, pct: Double?) = j < r.cells.count ? r.cells[j] : ("", nil)
                     if !cell.label.isEmpty {
                         let lSize = (cell.label as NSString).size(withAttributes: lAttrs)
                         (cell.label as NSString).draw(at: NSPoint(x: x, y: midY - lSize.height / 2), withAttributes: lAttrs)
                     }
-                    let bx = x + labelColW[j] + gapSmall
-                    drawBar(x: bx, y: midY - barH / 2, w: barW, h: barH, percent: cell.pct, dim: r.dim)
-                    x = bx + barW
+                    let bx = x + labelColW[j] + m.gapSmall
+                    drawBar(x: bx, y: midY - m.barH / 2, w: m.barW, h: m.barH, percent: cell.pct, dim: r.dim)
+                    x = bx + m.barW
                 }
             }
             return true

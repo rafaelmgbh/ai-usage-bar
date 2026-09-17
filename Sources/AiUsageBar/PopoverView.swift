@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Popover com duas seções: Claude (5h/7d) e Codex (5h/semana), barras horizontais
+/// Popover com uma seção por conta Claude (5h/7d) + Codex (5h/semana), barras horizontais
 /// arredondadas + countdown de reset. Rodapé com última atualização + atualizar + sair.
 struct PopoverView: View {
     @ObservedObject var model: UsageModel
@@ -17,17 +17,19 @@ struct PopoverView: View {
                 if model.isLoading { ProgressView().controlSize(.small) }
             }
 
-            // Claude
-            ProviderSection(
-                name: "Claude",
-                rows: model.usage.map {
-                    [("5h", $0.fiveHourPercent, resetText($0.fiveHourResetEpoch)),
-                     ("7d", $0.sevenDayPercent, resetText($0.sevenDayResetEpoch))]
-                },
-                error: model.errorText
-            )
+            // Claude — uma seção por conta, cada uma com o seu próprio erro
+            ForEach(model.claude) { acc in
+                ProviderSection(
+                    name: acc.label,
+                    rows: acc.usage.map {
+                        [("5h", $0.fiveHourPercent, resetText($0.fiveHourResetEpoch)),
+                         ("7d", $0.sevenDayPercent, resetText($0.sevenDayResetEpoch))]
+                    },
+                    error: acc.error
+                )
 
-            Divider()
+                Divider()
+            }
 
             // Codex
             ProviderSection(

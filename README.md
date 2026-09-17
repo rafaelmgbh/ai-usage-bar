@@ -47,11 +47,36 @@ The app is ad-hoc signed; since you build it yourself, Gatekeeper lets it run.
 ./autostart.sh off    # disable
 ```
 
+### Multiple Claude accounts (optional)
+
+Claude Code keeps one profile per config dir — `CLAUDE_CONFIG_DIR=~/.claude-work claude` signs you
+in as a separate account — and each profile's token lands in its **own** Keychain item. AI Usage Bar
+can watch several at once, one menu bar row per account.
+
+Create `~/.config/ai-usage-bar/accounts.json`:
+
+```json
+{
+  "claudeAccounts": [
+    { "label": "Personal" },
+    { "label": "Work", "configDir": "~/.claude-work" }
+  ]
+}
+```
+
+- Omit `configDir` for the default profile (`~/.claude`).
+- The label is what shows up in the menu bar — keep it short.
+- Without the file the app behaves exactly as before: a single Claude row.
+
+Every account is probed with its own token and the rate-limit headers come back from whichever
+account authenticated, so usage can't be attributed to the wrong one. From 3 rows on, the font and
+bars shrink to fit the menu bar's fixed height.
+
 ## How it works
 
 | Provider | Token source | Endpoint | Quota cost |
 |---|---|---|---|
-| **Claude** | macOS Keychain (`Claude Code-credentials` → `claudeAiOauth.accessToken`) | `POST api.anthropic.com/v1/messages` (`max_tokens:1` probe) → reads `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` headers | tiny (1 minimal request / refresh) |
+| **Claude** | macOS Keychain, per profile (`Claude Code-credentials[-<sha256(configDir)[0:8]>]` → `claudeAiOauth.accessToken`) | `POST api.anthropic.com/v1/messages` (`max_tokens:1` probe) → reads `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` headers | tiny (1 minimal request / refresh) |
 | **Codex** | `~/.codex/auth.json` (`tokens.access_token` + `account_id`) | `GET chatgpt.com/backend-api/wham/usage` → `rate_limit.{primary,secondary}_window.{used_percent,reset_at}` | **none** (status endpoint) |
 
 Refreshes every 5 minutes. The token is re-read each cycle, so when the CLI refreshes it the
@@ -61,6 +86,7 @@ Source layout:
 
 | File | Role |
 |---|---|
+| `AccountsConfig.swift` / `KeychainService.swift` | which accounts to watch + each one's Keychain item name |
 | `Keychain.swift` / `UsageProbe.swift` | Claude: read token + probe Messages API |
 | `CodexProbe.swift` | Codex: read `auth.json` + `wham/usage` |
 | `UsageModel.swift` | observable state; refreshes both providers in parallel |

@@ -47,6 +47,31 @@ O app é assinado ad-hoc; como você mesmo compila, o Gatekeeper deixa rodar.
 ./autostart.sh off    # desativar
 ```
 
+### Várias contas Claude (opcional)
+
+O Claude Code mantém um perfil por config dir — `CLAUDE_CONFIG_DIR=~/.claude-trabalho claude` loga
+como outra conta — e o token de cada perfil vai pra um item **próprio** no Keychain. O AI Usage Bar
+acompanha várias de uma vez, uma linha de menubar por conta.
+
+Crie `~/.config/ai-usage-bar/accounts.json`:
+
+```json
+{
+  "claudeAccounts": [
+    { "label": "Pessoal" },
+    { "label": "Trabalho", "configDir": "~/.claude-trabalho" }
+  ]
+}
+```
+
+- Sem `configDir` = perfil padrão (`~/.claude`).
+- O label é o que aparece na menubar — use algo curto.
+- Sem o arquivo, o app se comporta como antes: uma linha só de Claude.
+
+Cada conta é sondada com o token dela, e os headers de rate-limit voltam da conta que autenticou —
+não há como o consumo ser atribuído à conta errada. De 3 linhas em diante, fonte e barras encolhem
+pra caber na altura fixa da menubar.
+
 ## Como funciona
 
 | Provedor | Origem do token | Endpoint | Custo de quota |
@@ -61,6 +86,7 @@ Estrutura do código:
 
 | Arquivo | Papel |
 |---|---|
+| `AccountsConfig.swift` / `KeychainService.swift` | quais contas monitorar + nome do item de Keychain de cada uma |
 | `Keychain.swift` / `UsageProbe.swift` | Claude: lê token + probe na Messages API |
 | `CodexProbe.swift` | Codex: lê `auth.json` + `wham/usage` |
 | `UsageModel.swift` | estado observável; atualiza os dois provedores em paralelo |
