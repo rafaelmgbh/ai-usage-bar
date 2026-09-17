@@ -55,7 +55,7 @@ enum UsageProbe {
         do {
             creds = try Keychain.readCredentials(service: account.keychainService)
         } catch {
-            throw ProbeError.keychain("\(error)")
+            throw ProbeError.keychain((error as? KeychainFailure)?.message ?? "\(error)")
         }
 
         var req = URLRequest(url: endpoint)

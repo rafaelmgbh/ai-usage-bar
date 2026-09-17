@@ -28,14 +28,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 268, height: 300)
-        popover.contentViewController = NSHostingController(
+        // Altura fixa cortava o conteúdo assim que apareceu a 3ª seção (2 contas
+        // Claude + Codex). Deixamos o hosting controller medir a view.
+        let host = NSHostingController(
             rootView: PopoverView(
                 model: model,
                 onRefresh: { [weak self] in self?.refresh() },
                 onQuit: { NSApp.terminate(nil) }
             )
         )
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
 
         // redesenha o texto na cor certa quando o tema do sistema muda
         DistributedNotificationCenter.default.addObserver(

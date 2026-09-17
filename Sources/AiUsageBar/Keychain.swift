@@ -21,19 +21,6 @@ enum Keychain {
         let expiresAt: Double?
     }
 
-    enum KeychainError: Error, CustomStringConvertible {
-        case notFound
-        case unreadable(OSStatus)
-        case malformed
-
-        var description: String {
-            switch self {
-            case .notFound: return "conta não logada"
-            case .unreadable(let s): return "Keychain retornou status \(s)"
-            case .malformed: return "JSON da credencial em formato inesperado"
-            }
-        }
-    }
 
     /// - Parameter service: nome do item de Keychain do perfil desejado.
     ///   Filtramos só por `kSecAttrService`, e não por `kSecAttrAccount`: o CLI
@@ -50,9 +37,12 @@ enum Keychain {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
 
-        guard status != errSecItemNotFound else { throw KeychainError.notFound }
-        guard status == errSecSuccess else { throw KeychainError.unreadable(status) }
-        guard let data = item as? Data else { throw KeychainError.malformed }
+        guard status == errSecSuccess else {
+            // Só aqui pagamos a busca extra: ela diz se o item existe e separa
+            // "nunca logou" de "existe mas não liberou o acesso".
+            throw KeychainDiagnosis.classify(status: status, itemExists: itemExists(service: service))
+        }
+        guard let data = item as? Data else { throw KeychainFailure.malformed }
 
         guard
             let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -60,12 +50,25 @@ enum Keychain {
             let token = oauth["accessToken"] as? String,
             !token.isEmpty
         else {
-            throw KeychainError.malformed
+            throw KeychainFailure.malformed
         }
 
         let expires = (oauth["expiresAt"] as? Double)
             ?? (oauth["expiresAt"] as? NSNumber)?.doubleValue
 
         return Credentials(accessToken: token, expiresAt: expires)
+    }
+
+    /// Busca só os atributos do item: esse caminho não passa pela ACL, então
+    /// responde "existe?" mesmo quando a leitura do segredo é barrada.
+    private static func itemExists(service: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
     }
 }

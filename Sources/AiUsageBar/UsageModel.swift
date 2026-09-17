@@ -2,6 +2,13 @@ import Foundation
 import Combine
 import AiUsageCore
 
+/// Rastro de diagnóstico, ligado com `AIUSAGEBAR_DEBUG=1`. Sem isso não sobra
+/// como saber se uma conta falhou no Keychain, na rede ou no render.
+func dbg(_ message: @autoclosure () -> String) {
+    guard ProcessInfo.processInfo.environment["AIUSAGEBAR_DEBUG"] == "1" else { return }
+    NSLog("[dbg] %@", message())
+}
+
 /// Consumo de UMA conta Claude. `usage` e `error` vivem juntos na mesma célula
 /// justamente pra que um erro nunca "vaze" pra linha de outra conta.
 struct AccountUsage: Identifiable {
@@ -38,10 +45,12 @@ final class UsageModel: ObservableObject {
         async let x: Void = refreshCodex()
         _ = await (c, x)
         lastUpdated = Date()
+        dbg("fim do refresh: " + claude.map { "\($0.label)=\($0.usage.map { String(format: "%.0f%%", $0.fiveHourPercent) } ?? ($0.error ?? "nil/nil"))" }.joined(separator: " | "))
     }
 
     private func refreshClaude() async {
         let accounts = claude.map(\.account)
+        dbg("refreshClaude n=\(accounts.count) labels=\(accounts.map(\.label).joined(separator: ","))")
         guard !accounts.isEmpty else { return }
 
         // Indexamos o resultado pela posição da conta: o retorno das tasks chega
@@ -51,13 +60,24 @@ final class UsageModel: ObservableObject {
         await withTaskGroup(of: (Int, Result<Usage, Error>).self) { group in
             for (i, account) in accounts.enumerated() {
                 group.addTask {
-                    do { return (i, .success(try await UsageProbe.fetch(account: account))) }
-                    catch { return (i, .failure(error)) }
+                    dbg("task \(i) \(account.label) begin service=\(account.keychainService)")
+                    do {
+                        let u = try await UsageProbe.fetch(account: account)
+                        dbg("task \(i) \(account.label) ok 5h=\(u.fiveHourPercent)")
+                        return (i, .success(u))
+                    } catch {
+                        dbg("task \(i) \(account.label) erro=\(error)")
+                        return (i, .failure(error))
+                    }
                 }
             }
-            for await (i, result) in group { results[i] = result }
+            for await (i, result) in group {
+                dbg("recebi resultado do índice \(i)")
+                results[i] = result
+            }
         }
 
+        dbg("results keys=\(results.keys.sorted()) claude.count=\(claude.count)")
         for (i, result) in results where claude.indices.contains(i) {
             switch result {
             case .success(let u):

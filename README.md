@@ -38,7 +38,33 @@ open ~/Applications/AiUsageBar.app
 ```
 
 On first run macOS asks for **Keychain access** (for the Claude token) → click **Always Allow**.
-The app is ad-hoc signed; since you build it yourself, Gatekeeper lets it run.
+Since you build it yourself, Gatekeeper lets it run.
+
+### Stop the Keychain prompt from coming back (recommended)
+
+By default the app is **ad-hoc signed**, so every `./build.sh` produces a new code identity and
+macOS asks for your Keychain password again — and until you grant it, the Keychain hides the item
+from the app (`errSecItemNotFound`), which looks exactly like "not logged in".
+
+Create a stable local signing identity once:
+
+```bash
+./scripts/create-signing-identity.sh   # asks to trust the cert + your login keychain password
+./build.sh                             # now signs with it
+```
+
+After that the app's designated requirement stops depending on the build's cdhash, so the
+*trusted application* entry survives rebuilds. `build.sh` falls back to ad-hoc signing when the
+identity isn't there, so this step stays optional.
+
+macOS has a second gate — the item's **partition list** — which is still recorded per cdhash
+(a `--team-identifier` would make it stable, but AMFI kills a signature that claims a team id
+without an Apple chain). If a rebuild makes the password prompt come back, authorize the new
+build without any dialog:
+
+```bash
+./scripts/authorize-keychain.sh    # appends the new cdhash, removes nothing
+```
 
 ### Start at login (optional)
 
