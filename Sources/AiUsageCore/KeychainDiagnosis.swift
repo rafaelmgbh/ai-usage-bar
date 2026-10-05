@@ -51,4 +51,12 @@ public enum KeychainDiagnosis {
             return .unreadable(status)
         }
     }
+
+    /// `/usr/bin/security` sai com o byte baixo do OSStatus (ex.: -25300 → 44).
+    /// Desfaz isso pros status que `classify` distingue.
+    public static func status(forSecurityExitCode code: Int32) -> OSStatus {
+        let known: [OSStatus] = [errSecItemNotFound, errSecAuthFailed,
+                                 errSecUserCanceled, errSecInteractionNotAllowed]
+        return known.first { Int32(UInt32(bitPattern: $0) & 0xff) == code } ?? OSStatus(code)
+    }
 }

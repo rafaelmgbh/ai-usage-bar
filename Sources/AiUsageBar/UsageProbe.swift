@@ -55,7 +55,7 @@ enum UsageProbe {
     static func fetch(account: ClaudeAccount) async throws -> Usage {
         let creds: Keychain.Credentials
         do {
-            creds = try Keychain.readCredentials(service: account.keychainService)
+            creds = try await Keychain.readCredentials(service: account.keychainService)
         } catch {
             throw ProbeError.keychain((error as? KeychainFailure)?.message ?? "\(error)")
         }

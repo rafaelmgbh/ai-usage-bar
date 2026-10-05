@@ -148,8 +148,10 @@ final class UsageModel: ObservableObject {
         do {
             deepseek = try await DeepSeekProbe.fetch(config: cfg)
             deepseekError = nil
+            dbg("deepseek ok disponível=\(deepseek?.isAvailable ?? false) total=\(deepseek?.primary.map { "\($0.currency) \($0.total)" } ?? "-")")
         } catch {
             deepseekError = "\(error)"
+            dbg("deepseek erro=\(error)")
         }
     }
 
@@ -159,8 +161,10 @@ final class UsageModel: ObservableObject {
             // SQLite pode esperar até 2s pelo lock do CLI: fora da main thread.
             jev = try await Task.detached { try JevLedger.read(config: cfg) }.value
             jevError = nil
+            dbg("jev ok mês=\(jev?.monthUSD ?? -1) chamadas=\(jev?.monthCalls ?? -1) saldo=\(jev?.balanceUSD.map { "\($0)" } ?? "-")")
         } catch {
             jevError = "\(error)"
+            dbg("jev erro=\(error)")
         }
     }
 }

@@ -48,3 +48,23 @@ final class KeychainDiagnosisTests: XCTestCase {
         XCTAssertTrue(KeychainFailure.unreadable(errSecDecode).message.contains("\(errSecDecode)"))
     }
 }
+
+final class SecurityExitCodeTests: XCTestCase {
+
+    /// `/usr/bin/security` sai com o OSStatus truncado no byte baixo.
+    func testMissingItemMapsToItemNotFound() {
+        XCTAssertEqual(KeychainDiagnosis.status(forSecurityExitCode: 44), errSecItemNotFound)
+    }
+
+    func testAccessFailuresMapToTheirStatus() {
+        XCTAssertEqual(KeychainDiagnosis.status(forSecurityExitCode: 51), errSecAuthFailed)
+        XCTAssertEqual(KeychainDiagnosis.status(forSecurityExitCode: 128), errSecUserCanceled)
+        XCTAssertEqual(KeychainDiagnosis.status(forSecurityExitCode: 36), errSecInteractionNotAllowed)
+    }
+
+    /// Item que não existe tem que continuar virando "não logada", não "sem permissão".
+    func testMissingItemIsStillNotLoggedIn() {
+        let s = KeychainDiagnosis.status(forSecurityExitCode: 44)
+        XCTAssertEqual(KeychainDiagnosis.classify(status: s, itemExists: false), .notLoggedIn)
+    }
+}

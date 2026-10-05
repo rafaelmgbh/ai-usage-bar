@@ -37,7 +37,10 @@ cd ai-usage-bar
 open ~/Applications/AiUsageBar.app
 ```
 
-Na 1ª execução o macOS pede **acesso ao Keychain** (token do Claude) → clique **"Sempre Permitir"**.
+Não deve aparecer pedido de senha do Keychain: os itens são lidos pelo `/usr/bin/security`, a mesma
+ferramenta com que o Claude Code os cria — ela já tem acesso, e a assinatura dela não muda a cada
+`./build.sh` (a do app muda, e lendo direto o macOS pediria a senha de novo após todo rebuild). Se
+um dia pedir, **"Sempre Permitir"** vale pro `security` e sobrevive a rebuilds.
 O app é assinado ad-hoc; como você mesmo compila, o Gatekeeper deixa rodar.
 
 ### Iniciar no login (opcional)
@@ -95,7 +98,6 @@ um é opt-in no `accounts.json`:
 - **DeepSeek** — `GET api.deepseek.com/user/balance` (só leitura, não gasta). A chave fica num item
   genérico do Keychain (`DEEPSEEK_API_KEY` por padrão):
   `security add-generic-password -s DEEPSEEK_API_KEY -a "$USER" -w` (pede a chave).
-  Depois rode `./scripts/authorize-keychain.sh` pra rebuild não pedir a senha do Keychain.
 - **Jev** ([TypeSafe](https://typesafe.ai)) — a API **não tem endpoint de saldo**, então o saldo é
   *estimado*: `creditUSD` menos o `custo_usd` que o CLI [`jev`](https://github.com/rafaelmgbh/jev)
   registrou em `~/.local/share/jev/decisions.db` desde `since` (`AAAA-MM-DD`, dia da recarga). Só

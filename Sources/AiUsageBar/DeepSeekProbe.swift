@@ -12,7 +12,7 @@ enum DeepSeekProbe {
     static func fetch(config: DeepSeekConfig) async throws -> DeepSeekBalance {
         let key: String
         do {
-            key = try Keychain.readSecret(service: config.keychainService)
+            key = try await Keychain.readSecret(service: config.keychainService)
         } catch KeychainFailure.notLoggedIn {
             // A mensagem genérica ("conta não logada") não diz o que fazer aqui.
             throw ProbeError.keychain("chave não encontrada (item \(config.keychainService))")

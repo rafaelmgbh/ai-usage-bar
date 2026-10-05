@@ -37,34 +37,17 @@ cd ai-usage-bar
 open ~/Applications/AiUsageBar.app
 ```
 
-On first run macOS asks for **Keychain access** (for the Claude token) → click **Always Allow**.
+No Keychain prompt is expected: items are read through `/usr/bin/security` (see below). If macOS
+ever asks, click **Always Allow** — it is granted to `security`, so it survives rebuilds.
 Since you build it yourself, Gatekeeper lets it run.
 
-### Stop the Keychain prompt from coming back (recommended)
+### Why rebuilds don't ask for the Keychain password
 
-By default the app is **ad-hoc signed**, so every `./build.sh` produces a new code identity and
-macOS asks for your Keychain password again — and until you grant it, the Keychain hides the item
-from the app (`errSecItemNotFound`), which looks exactly like "not logged in".
-
-Create a stable local signing identity once:
-
-```bash
-./scripts/create-signing-identity.sh   # asks to trust the cert + your login keychain password
-./build.sh                             # now signs with it
-```
-
-After that the app's designated requirement stops depending on the build's cdhash, so the
-*trusted application* entry survives rebuilds. `build.sh` falls back to ad-hoc signing when the
-identity isn't there, so this step stays optional.
-
-macOS has a second gate — the item's **partition list** — which is still recorded per cdhash
-(a `--team-identifier` would make it stable, but AMFI kills a signature that claims a team id
-without an Apple chain). If a rebuild makes the password prompt come back, authorize the new
-build without any dialog:
-
-```bash
-./scripts/authorize-keychain.sh    # appends the new cdhash, removes nothing
-```
+The app reads Keychain items through `/usr/bin/security` instead of calling the Keychain API
+itself. Claude Code creates its credential items with that same tool, so `security` is already
+trusted by them (trusted-apps list + `apple-tool:` partition). Reading directly would tie access to
+the app's own code signature — the cdhash, which changes on every `./build.sh` — and macOS would ask
+for your Keychain password again after each rebuild.
 
 ### Start at login (optional)
 
@@ -121,7 +104,6 @@ stay out of the menu bar. Each one is opt-in in `accounts.json`:
 - **DeepSeek** — `GET api.deepseek.com/user/balance` (read-only, free). The API key lives in a
   generic Keychain item (`DEEPSEEK_API_KEY` by default):
   `security add-generic-password -s DEEPSEEK_API_KEY -a "$USER" -w` (prompts for the key).
-  Then run `./scripts/authorize-keychain.sh` so rebuilds don't ask for the Keychain password.
 - **Jev** ([TypeSafe](https://typesafe.ai)) — the API has **no balance endpoint**, so the balance is
   *estimated*: `creditUSD` minus the `custo_usd` the [`jev`](https://github.com/rafaelmgbh/jev) CLI
   logged in `~/.local/share/jev/decisions.db` since `since` (`YYYY-MM-DD`, the top-up day). Only
