@@ -59,6 +59,29 @@ enum Keychain {
         return Credentials(accessToken: token, expiresAt: expires)
     }
 
+    /// Segredo em texto puro (ex.: chave de API gravada com
+    /// `security add-generic-password -s <service> -a $USER -w`).
+    static func readSecret(service: String) throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess else {
+            throw KeychainDiagnosis.classify(status: status, itemExists: itemExists(service: service))
+        }
+        guard
+            let data = item as? Data,
+            let secret = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !secret.isEmpty
+        else { throw KeychainFailure.malformed }
+        return secret
+    }
+
     /// Busca só os atributos do item: esse caminho não passa pela ACL, então
     /// responde "existe?" mesmo quando a leitura do segredo é barrada.
     private static func itemExists(service: String) -> Bool {

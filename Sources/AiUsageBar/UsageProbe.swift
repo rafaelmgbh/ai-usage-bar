@@ -15,6 +15,7 @@ struct Usage: Sendable {
 enum ProbeError: Error, CustomStringConvertible {
     case keychain(String)
     case unauthorized          // 401 → token expirado/inválido
+    case rejectedKey           // 401 numa chave de API fixa (não expira sozinha)
     case http(Int)
     case noHeaders             // resposta sem os headers de rate-limit
     case transport(String)     // rede off, timeout, etc.
@@ -23,6 +24,7 @@ enum ProbeError: Error, CustomStringConvertible {
         switch self {
         case .keychain(let m): return "Keychain: \(m)"
         case .unauthorized: return "token expirado"
+        case .rejectedKey: return "chave de API recusada (HTTP 401)"
         case .http(let c): return "HTTP \(c)"
         case .noHeaders: return "sem headers de rate-limit"
         case .transport(let m): return m

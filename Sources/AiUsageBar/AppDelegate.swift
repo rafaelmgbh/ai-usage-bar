@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import AiUsageCore
 
@@ -10,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var timer: Timer?
+    private var cancellables = Set<AnyCancellable>()
 
     private let refreshInterval: TimeInterval = 300  // 5 min
 
@@ -21,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let btn = statusItem.button {
             btn.imagePosition = .imageOnly
-            btn.image = Self.placeholderImage(labels: model.claude.map(\.label))
+            btn.image = Self.drawStatusImage(rows: statusRows(placeholder: true))
             btn.toolTip = "carregando…"
             btn.action = #selector(togglePopover)
             btn.target = self
@@ -48,6 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.updateStatusItem() }
         }
 
+        // Toggle no popover muda o que a menubar desenha sem esperar o refresh.
+        // O debounce junta a rajada de @Published de um ciclo num redesenho só.
+        model.objectWillChange
+            .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.updateStatusItem() }
+            }
+            .store(in: &cancellables)
+
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -61,35 +72,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Menubar (uma linha por conta Claude + uma do Codex)
+    // MARK: - Menubar (uma linha por conta Claude + uma do Codex, só as ligadas)
 
     private func updateStatusItem() {
         guard let btn = statusItem.button else { return }
-
-        // Uma linha por conta, rotulada com o label dela: o número na menubar
-        // nunca aparece sem dono.
-        var rows = model.claude.map { acc in
-            Row(brand: acc.label,
-                cells: [("5h", acc.usage?.fiveHourPercent),
-                        ("7d", acc.usage?.sevenDayPercent)],
-                dim: acc.error != nil)
-        }
-        rows.append(Row(
-            brand: "Codex",
-            cells: [("5h", model.codexUsage?.fiveHourPercent),
-                    ("7d", model.codexUsage?.weeklyPercent)],
-            dim: model.codexError != nil
-        ))
-
-        btn.image = Self.drawStatusImage(rows: rows)
+        btn.image = Self.drawStatusImage(rows: statusRows(placeholder: false))
         btn.toolTip = buildTooltip()
+    }
+
+    private var enabledClaude: [AccountUsage] {
+        model.claude.filter { model.isEnabled(MonitorID.claude($0.label)) }
+    }
+
+    /// Uma linha por conta ligada, rotulada com o label dela: o número na
+    /// menubar nunca aparece sem dono. Saldos ficam fora (não são %).
+    private func statusRows(placeholder: Bool) -> [Row] {
+        var rows = enabledClaude.map { acc in
+            Row(brand: acc.label,
+                cells: [("5h", placeholder ? nil : acc.usage?.fiveHourPercent),
+                        ("7d", placeholder ? nil : acc.usage?.sevenDayPercent)],
+                dim: placeholder || acc.error != nil)
+        }
+        if model.isEnabled(MonitorID.codex) {
+            rows.append(Row(
+                brand: "Codex",
+                cells: [("5h", placeholder ? nil : model.codexUsage?.fiveHourPercent),
+                        ("7d", placeholder ? nil : model.codexUsage?.weeklyPercent)],
+                dim: placeholder || model.codexError != nil
+            ))
+        }
+        // Tudo desligado: sem imagem o item some da menubar e não dá mais pra
+        // abrir o popover pra religar.
+        if rows.isEmpty { rows = [Row(brand: "AI", cells: [], dim: true)] }
+        return rows
     }
 
     private func buildTooltip() -> String {
         var out = [String]()
-        let pad = max(model.claude.map(\.label.count).max() ?? 0, "Codex".count)
+        var names = enabledClaude.map(\.label) + ["Codex"]
+        if model.config.deepseek != nil { names.append("DeepSeek") }
+        let pad = names.map(\.count).max() ?? 0
 
-        for acc in model.claude {
+        for acc in enabledClaude {
             let name = acc.label.padding(toLength: pad, withPad: " ", startingAt: 0)
             if let u = acc.usage {
                 var l = String(format: "%@  5h %.0f%% %@  ·  7d %.0f%% %@",
@@ -103,16 +127,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        let codexName = "Codex".padding(toLength: pad, withPad: " ", startingAt: 0)
-        if let c = model.codexUsage {
-            var l = String(format: "%@  5h %.0f%% %@  ·  7d %.0f%% %@",
-                           codexName,
-                           c.fiveHourPercent, resetText(c.fiveHourResetEpoch),
-                           c.weeklyPercent, resetText(c.weeklyResetEpoch))
-            if let e = model.codexError { l += "   ⚠︎ \(short(e))" }
-            out.append(l)
-        } else if let e = model.codexError {
-            out.append("\(codexName)  ⚠︎ \(short(e))")
+        if model.isEnabled(MonitorID.codex) {
+            let codexName = "Codex".padding(toLength: pad, withPad: " ", startingAt: 0)
+            if let c = model.codexUsage {
+                var l = String(format: "%@  5h %.0f%% %@  ·  7d %.0f%% %@",
+                               codexName,
+                               c.fiveHourPercent, resetText(c.fiveHourResetEpoch),
+                               c.weeklyPercent, resetText(c.weeklyResetEpoch))
+                if let e = model.codexError { l += "   ⚠︎ \(short(e))" }
+                out.append(l)
+            } else if let e = model.codexError {
+                out.append("\(codexName)  ⚠︎ \(short(e))")
+            }
+        }
+
+        if model.config.deepseek != nil, model.isEnabled(MonitorID.deepseek) {
+            let name = "DeepSeek".padding(toLength: pad, withPad: " ", startingAt: 0)
+            if let b = model.deepseek, let p = b.primary {
+                var l = "\(name)  \(Money.format(p.total, currency: p.currency))"
+                if !b.isAvailable { l += "  (indisponível)" }
+                if let e = model.deepseekError { l += "   ⚠︎ \(e)" }
+                out.append(l)
+            } else if let e = model.deepseekError {
+                out.append("\(name)  ⚠︎ \(e)")
+            }
+        }
+
+        if model.config.jev != nil, model.isEnabled(MonitorID.jev) {
+            let name = "Jev".padding(toLength: pad, withPad: " ", startingAt: 0)
+            if let s = model.jev {
+                let month = "mês \(Money.format(s.monthUSD, currency: "USD"))"
+                var l = s.balanceUSD.map { "\(name)  saldo ~\(Money.format($0, currency: "USD"))  ·  \(month)" }
+                    ?? "\(name)  \(month)"
+                if let e = model.jevError { l += "   ⚠︎ \(e)" }
+                out.append(l)
+            } else if let e = model.jevError {
+                out.append("\(name)  ⚠︎ \(e)")
+            }
         }
 
         return out.isEmpty ? "carregando…" : out.joined(separator: "\n")
@@ -155,13 +206,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static func textWidth(_ s: String, _ f: NSFont) -> CGFloat {
         (s as NSString).size(withAttributes: [.font: f]).width
-    }
-
-    private static func placeholderImage(labels: [String]) -> NSImage {
-        let rows = (labels + ["Codex"]).map {
-            Row(brand: $0, cells: [("5h", nil), ("7d", nil)], dim: true)
-        }
-        return drawStatusImage(rows: rows)
     }
 
     /// Desenha N linhas (marca + células rotuladas), colunas alinhadas verticalmente.

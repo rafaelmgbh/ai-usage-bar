@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Autoriza o build ATUAL do AiUsageBar nos itens de Keychain do Claude Code,
-# sem diálogo do macOS.
+# Autoriza o build ATUAL do AiUsageBar nos itens de Keychain do Claude Code
+# (e na chave da API DeepSeek, se configurada), sem diálogo do macOS.
 #
 # Por quê: o acesso a um item passa por duas portas. A lista de apps confiáveis
 # casa pelo requisito designado — com a identidade local (ver
@@ -51,6 +51,19 @@ for a in cfg.get("claudeAccounts", []):
     if d:
         print(d)
 ' "$ACCOUNTS_JSON")
+
+    # Chave da API DeepSeek (monitor de saldo), quando configurado.
+    ds_service="$(/usr/bin/python3 -c '
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+ds = cfg.get("deepseek")
+if isinstance(ds, dict):
+    print((ds.get("keychainService") or "").strip() or "DEEPSEEK_API_KEY")
+' "$ACCOUNTS_JSON")"
+    [ -n "$ds_service" ] && services+=("$ds_service")
 fi
 
 # Lista de partições atual de um item (linha description: do ACL partition_id).

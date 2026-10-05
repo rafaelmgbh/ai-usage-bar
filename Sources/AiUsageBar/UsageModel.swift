@@ -21,20 +21,46 @@ struct AccountUsage: Identifiable {
 }
 
 /// Estado observável compartilhado entre a menubar (AppKit) e o popover (SwiftUI).
-/// Cobre N contas Claude (probe Messages API) + Codex (wham/usage).
+/// Cobre N contas Claude (probe Messages API) + Codex (wham/usage) + saldos
+/// opcionais (DeepSeek, Jev). Monitor desligado não é consultado nem desenhado.
 @MainActor
 final class UsageModel: ObservableObject {
+    let config: AppConfig
+    private let prefs: MonitorPrefs
+
     // Claude — uma entrada por conta configurada, na ordem do accounts.json
     @Published var claude: [AccountUsage]
     // Codex
     @Published var codexUsage: CodexUsage?
     @Published var codexError: String?
+    // Saldos (só existem se configurados no accounts.json)
+    @Published var deepseek: DeepSeekBalance?
+    @Published var deepseekError: String?
+    @Published var jev: JevSpend?
+    @Published var jevError: String?
+
+    /// Ids (`MonitorID`) dos monitores desligados pelo usuário.
+    @Published private(set) var disabled: Set<String>
 
     @Published var lastUpdated: Date?
     @Published var isLoading = false
 
-    init(accounts: [ClaudeAccount] = AccountsConfig.load()) {
-        self.claude = accounts.map { AccountUsage(account: $0) }
+    init(config: AppConfig = AccountsConfig.loadConfig(), prefs: MonitorPrefs = MonitorPrefs()) {
+        self.config = config
+        self.prefs = prefs
+        self.claude = config.claudeAccounts.map { AccountUsage(account: $0) }
+        self.disabled = prefs.disabled
+    }
+
+    func isEnabled(_ id: String) -> Bool { !disabled.contains(id) }
+
+    /// Liga/desliga um monitor. Religar consulta só ele na hora — esperar o
+    /// próximo ciclo de 5 min deixaria a seção vazia ou com número velho.
+    func setEnabled(_ id: String, _ on: Bool) {
+        guard isEnabled(id) != on else { return }
+        prefs.setEnabled(id, on)
+        disabled = prefs.disabled
+        if on { Task { await refreshOne(id) } }
     }
 
     func refresh() async {
@@ -43,22 +69,40 @@ final class UsageModel: ObservableObject {
         // dispara todas as fontes em paralelo; uma falhar não derruba as outras
         async let c: Void = refreshClaude()
         async let x: Void = refreshCodex()
-        _ = await (c, x)
+        async let d: Void = refreshDeepSeek()
+        async let j: Void = refreshJev()
+        _ = await (c, x, d, j)
         lastUpdated = Date()
         dbg("fim do refresh: " + claude.map { "\($0.label)=\($0.usage.map { String(format: "%.0f%%", $0.fiveHourPercent) } ?? ($0.error ?? "nil/nil"))" }.joined(separator: " | "))
     }
 
-    private func refreshClaude() async {
-        let accounts = claude.map(\.account)
-        dbg("refreshClaude n=\(accounts.count) labels=\(accounts.map(\.label).joined(separator: ","))")
-        guard !accounts.isEmpty else { return }
+    private func refreshOne(_ id: String) async {
+        switch id {
+        case MonitorID.codex: await refreshCodex()
+        case MonitorID.deepseek: await refreshDeepSeek()
+        case MonitorID.jev: await refreshJev()
+        default: await refreshClaude(only: id)
+        }
+    }
+
+    /// - Parameter only: `MonitorID` de uma conta pra consultar só ela.
+    private func refreshClaude(only: String? = nil) async {
+        // Guardamos o índice original de cada conta: é por ele que o resultado
+        // volta pro lugar certo, mesmo com contas desligadas no meio da lista.
+        let targets = claude.indices.compactMap { i -> (Int, ClaudeAccount)? in
+            let id = MonitorID.claude(claude[i].label)
+            guard isEnabled(id), only == nil || only == id else { return nil }
+            return (i, claude[i].account)
+        }
+        dbg("refreshClaude n=\(targets.count) labels=\(targets.map(\.1.label).joined(separator: ","))")
+        guard !targets.isEmpty else { return }
 
         // Indexamos o resultado pela posição da conta: o retorno das tasks chega
         // fora de ordem, e casar por índice é o que impede trocar o número de
         // lugar entre as contas.
         var results: [Int: Result<Usage, Error>] = [:]
         await withTaskGroup(of: (Int, Result<Usage, Error>).self) { group in
-            for (i, account) in accounts.enumerated() {
+            for (i, account) in targets {
                 group.addTask {
                     dbg("task \(i) \(account.label) begin service=\(account.keychainService)")
                     do {
@@ -90,11 +134,33 @@ final class UsageModel: ObservableObject {
     }
 
     private func refreshCodex() async {
+        guard isEnabled(MonitorID.codex) else { return }
         do {
             codexUsage = try await CodexProbe.fetch()
             codexError = nil
         } catch {
             codexError = "\(error)"
+        }
+    }
+
+    private func refreshDeepSeek() async {
+        guard let cfg = config.deepseek, isEnabled(MonitorID.deepseek) else { return }
+        do {
+            deepseek = try await DeepSeekProbe.fetch(config: cfg)
+            deepseekError = nil
+        } catch {
+            deepseekError = "\(error)"
+        }
+    }
+
+    private func refreshJev() async {
+        guard let cfg = config.jev, isEnabled(MonitorID.jev) else { return }
+        do {
+            // SQLite pode esperar até 2s pelo lock do CLI: fora da main thread.
+            jev = try await Task.detached { try JevLedger.read(config: cfg) }.value
+            jevError = nil
+        } catch {
+            jevError = "\(error)"
         }
     }
 }

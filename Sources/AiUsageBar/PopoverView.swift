@@ -1,7 +1,10 @@
 import SwiftUI
+import AiUsageCore
 
 /// Popover com uma seção por conta Claude (5h/7d) + Codex (5h/semana), barras horizontais
-/// arredondadas + countdown de reset. Rodapé com última atualização + atualizar + sair.
+/// arredondadas + countdown de reset, e os saldos configurados (DeepSeek, Jev). Cada
+/// seção tem um switch que liga/desliga o monitor. Rodapé com última atualização +
+/// atualizar + sair.
 struct PopoverView: View {
     @ObservedObject var model: UsageModel
     var onRefresh: () -> Void
@@ -19,13 +22,16 @@ struct PopoverView: View {
 
             // Claude — uma seção por conta, cada uma com o seu próprio erro
             ForEach(model.claude) { acc in
+                let id = MonitorID.claude(acc.label)
                 ProviderSection(
                     name: acc.label,
                     rows: acc.usage.map {
                         [("5h", $0.fiveHourPercent, resetText($0.fiveHourResetEpoch)),
                          ("7d", $0.sevenDayPercent, resetText($0.sevenDayResetEpoch))]
                     },
-                    error: acc.error
+                    error: acc.error,
+                    isOn: model.isEnabled(id),
+                    onToggle: { model.setEnabled(id, $0) }
                 )
 
                 Divider()
@@ -38,10 +44,30 @@ struct PopoverView: View {
                     [("5h", $0.fiveHourPercent, resetText($0.fiveHourResetEpoch)),
                      ("7d", $0.weeklyPercent, resetText($0.weeklyResetEpoch))]
                 },
-                error: model.codexError
+                error: model.codexError,
+                isOn: model.isEnabled(MonitorID.codex),
+                onToggle: { model.setEnabled(MonitorID.codex, $0) }
             )
 
             Divider()
+
+            if let cfg = model.config.deepseek {
+                DeepSeekSection(
+                    config: cfg, balance: model.deepseek, error: model.deepseekError,
+                    isOn: model.isEnabled(MonitorID.deepseek),
+                    onToggle: { model.setEnabled(MonitorID.deepseek, $0) }
+                )
+                Divider()
+            }
+
+            if let cfg = model.config.jev {
+                JevSection(
+                    config: cfg, spend: model.jev, error: model.jevError,
+                    isOn: model.isEnabled(MonitorID.jev),
+                    onToggle: { model.setEnabled(MonitorID.jev, $0) }
+                )
+                Divider()
+            }
 
             HStack(spacing: 10) {
                 Button(action: onRefresh) { Image(systemName: "arrow.clockwise") }
@@ -60,39 +86,189 @@ struct PopoverView: View {
     }
 }
 
-/// Cabeçalho de provider + suas barras (ou mensagem de erro/sem-dado).
+/// Cabeçalho de um monitor com o switch de liga/desliga. Desligado, só o
+/// cabeçalho fica — é dele que se religa.
+private struct MonitorSection<Content: View>: View {
+    let name: String
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(name.uppercased())
+                    .font(.caption2).fontWeight(.semibold)
+                    .foregroundStyle(isOn ? .secondary : .tertiary)
+                    .tracking(0.5)
+                Spacer()
+                Toggle("", isOn: Binding(get: { isOn }, set: onToggle))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+                    .help(isOn ? "Desativar \(name)" : "Ativar \(name)")
+            }
+            if isOn { content() }
+        }
+    }
+}
+
+/// Seção de provider com barras (ou mensagem de erro/sem-dado).
 private struct ProviderSection: View {
     let name: String
     let rows: [(label: String, percent: Double, reset: String)]?
     let error: String?
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(name.uppercased())
-                .font(.caption2).fontWeight(.semibold)
-                .foregroundStyle(.secondary)
-                .tracking(0.5)
-
+        MonitorSection(name: name, isOn: isOn, onToggle: onToggle) {
             if let rows {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
                     BarRow(label: r.label, percent: r.percent, reset: r.reset)
                 }
                 if let error {
-                    errorLabel(error)
+                    ErrorLabel(error: error)
                 }
             } else if let error {
-                errorLabel(error)
+                ErrorLabel(error: error)
             } else {
-                Text("sem dados ainda…").font(.callout).foregroundStyle(.secondary)
+                NoDataLabel()
+            }
+        }
+    }
+}
+
+/// Saldo da API DeepSeek.
+private struct DeepSeekSection: View {
+    let config: DeepSeekConfig
+    let balance: DeepSeekBalance?
+    let error: String?
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        MonitorSection(name: "DeepSeek", isOn: isOn, onToggle: onToggle) {
+            if let balance, let p = balance.primary {
+                BalanceRow(
+                    label: "saldo",
+                    value: Money.format(p.total, currency: p.currency),
+                    level: BalanceLevel.of(amount: p.total, alertBelow: config.alertBelow,
+                                           available: balance.isAvailable),
+                    caption: caption(balance, p)
+                )
+                if let error { ErrorLabel(error: error) }
+            } else if let error {
+                ErrorLabel(error: error)
+            } else {
+                NoDataLabel()
             }
         }
     }
 
-    @ViewBuilder private func errorLabel(_ e: String) -> some View {
-        Label(prettyError(e), systemImage: "exclamationmark.triangle.fill")
+    private func caption(_ b: DeepSeekBalance, _ p: DeepSeekBalance.Entry) -> String {
+        guard b.isAvailable else { return "indisponível — sem saldo pra chamar a API" }
+        guard p.granted > 0 else { return "" }
+        return "bônus \(Money.format(p.granted, currency: p.currency)) · "
+            + "recarga \(Money.format(p.toppedUp, currency: p.currency))"
+    }
+}
+
+/// Saldo estimado do Jev (crédito − gasto do log local) + gasto do mês.
+private struct JevSection: View {
+    let config: JevConfig
+    let spend: JevSpend?
+    let error: String?
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        MonitorSection(name: "Jev", isOn: isOn, onToggle: onToggle) {
+            if let spend {
+                if let balance = spend.balanceUSD {
+                    BalanceRow(
+                        label: "saldo",
+                        value: "~" + Money.format(balance, currency: "USD"),
+                        level: BalanceLevel.of(amount: balance, alertBelow: config.alertBelow),
+                        caption: balanceCaption(spend)
+                    )
+                }
+                BalanceRow(
+                    label: "mês",
+                    value: Money.format(spend.monthUSD, currency: "USD"),
+                    level: nil,
+                    caption: spend.balanceUSD == nil
+                        ? "\(spend.monthCalls) chamadas · defina creditUSD no accounts.json pra ver o saldo"
+                        : "\(spend.monthCalls) chamadas · log deste Mac"
+                )
+                if let error { ErrorLabel(error: error) }
+            } else if let error {
+                ErrorLabel(error: error)
+            } else {
+                NoDataLabel()
+            }
+        }
+    }
+
+    private func balanceCaption(_ s: JevSpend) -> String {
+        let credit = Money.format(config.creditUSD ?? 0, currency: "USD")
+        let spent = Money.format(s.sinceUSD ?? 0, currency: "USD")
+        let since = config.since.map { " desde \(dayMonth($0))" } ?? ""
+        return "crédito \(credit) − gasto \(spent)\(since)"
+    }
+}
+
+/// Uma linha de valor (saldo/gasto) com rótulo, valor colorido e legenda.
+private struct BalanceRow: View {
+    let label: String
+    let value: String
+    /// `nil` = valor neutro (gasto), sem semáforo.
+    let level: BalanceLevel?
+    let caption: String
+
+    private var color: Color {
+        switch level {
+        case .ok: return .green
+        case .low: return .orange
+        case .empty: return .red
+        case nil: return .primary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.system(.subheadline, design: .rounded)).fontWeight(.semibold)
+                    .frame(width: 48, alignment: .leading)
+                Spacer()
+                Text(value)
+                    .font(.system(.subheadline, design: .rounded).monospacedDigit())
+                    .foregroundStyle(color)
+            }
+            if !caption.isEmpty {
+                Text(caption).font(.caption2).foregroundStyle(.secondary)
+                    .padding(.leading, 56)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct ErrorLabel: View {
+    let error: String
+
+    var body: some View {
+        Label(prettyError(error), systemImage: "exclamationmark.triangle.fill")
             .font(.caption)
-            .foregroundStyle(e.contains("token expirado") ? .red : .orange)
+            .foregroundStyle(error.contains("token expirado") ? .red : .orange)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct NoDataLabel: View {
+    var body: some View {
+        Text("sem dados ainda…").font(.callout).foregroundStyle(.secondary)
     }
 }
 
@@ -139,6 +315,12 @@ private struct BarRow: View {
 private func prettyError(_ err: String) -> String {
     if err.contains("token expirado") { return "Token expirado — abra o app/CLI uma vez." }
     return err
+}
+
+/// "2026-09-30" → "30/09".
+private func dayMonth(_ iso: String) -> String {
+    let p = iso.split(separator: "-")
+    return p.count == 3 ? "\(p[2])/\(p[1])" : iso
 }
 
 private func timeStr(_ d: Date) -> String {

@@ -72,12 +72,44 @@ Cada conta é sondada com o token dela, e os headers de rate-limit voltam da con
 não há como o consumo ser atribuído à conta errada. De 3 linhas em diante, fonte e barras encolhem
 pra caber na altura fixa da menubar.
 
+### Ligar/desligar monitores
+
+Cada seção do popover tem um switch. Desligar um monitor tira a linha dele da menubar e para de
+consultá-lo (conta Claude desligada = nenhum probe). A escolha sobrevive a reinícios; religar
+atualiza aquele monitor na hora. Com tudo desligado a menubar mostra um `AI` apagado, pra ainda dar
+pra abrir o popover.
+
+### Saldos de API: DeepSeek e Jev (opcional)
+
+Saldos aparecem só no popover e no tooltip — são valores, não %, então ficam fora da menubar. Cada
+um é opt-in no `accounts.json`:
+
+```json
+{
+  "claudeAccounts": [ { "label": "Pessoal" } ],
+  "deepseek": { "keychainService": "DEEPSEEK_API_KEY", "alertBelow": 1 },
+  "jev": { "creditUSD": 10, "since": "2026-09-30", "alertBelow": 1 }
+}
+```
+
+- **DeepSeek** — `GET api.deepseek.com/user/balance` (só leitura, não gasta). A chave fica num item
+  genérico do Keychain (`DEEPSEEK_API_KEY` por padrão):
+  `security add-generic-password -s DEEPSEEK_API_KEY -a "$USER" -w` (pede a chave).
+  Depois rode `./scripts/authorize-keychain.sh` pra rebuild não pedir a senha do Keychain.
+- **Jev** ([TypeSafe](https://typesafe.ai)) — a API **não tem endpoint de saldo**, então o saldo é
+  *estimado*: `creditUSD` menos o `custo_usd` que o CLI [`jev`](https://github.com/rafaelmgbh/jev)
+  registrou em `~/.local/share/jev/decisions.db` desde `since` (`AAAA-MM-DD`, dia da recarga). Só
+  conta chamadas feitas deste Mac. Sem `creditUSD`, mostra só o gasto do mês.
+- `alertBelow` (padrão 1): abaixo disso o saldo fica laranja; zerado/indisponível, vermelho.
+
 ## Como funciona
 
 | Provedor | Origem do token | Endpoint | Custo de quota |
 |---|---|---|---|
 | **Claude** | Keychain (`Claude Code-credentials` → `claudeAiOauth.accessToken`) | `POST api.anthropic.com/v1/messages` (probe `max_tokens:1`) → lê headers `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` | ínfimo (1 request mínimo / refresh) |
 | **Codex** | `~/.codex/auth.json` (`tokens.access_token` + `account_id`) | `GET chatgpt.com/backend-api/wham/usage` → `rate_limit.{primary,secondary}_window.{used_percent,reset_at}` | **nenhum** (endpoint de status) |
+| **DeepSeek** *(opt-in)* | item genérico do Keychain (`DEEPSEEK_API_KEY`) | `GET api.deepseek.com/user/balance` → `balance_infos[].total_balance` | **nenhum** |
+| **Jev** *(opt-in)* | — | SQLite local `~/.local/share/jev/decisions.db` → `SUM(custo_usd)` | **nenhum** (sem rede) |
 
 Atualiza a cada 5 minutos. O token é relido a cada ciclo, então quando o CLI o renova o app
 pega o novo sozinho.
@@ -86,10 +118,13 @@ Estrutura do código:
 
 | Arquivo | Papel |
 |---|---|
-| `AccountsConfig.swift` / `KeychainService.swift` | quais contas monitorar + nome do item de Keychain de cada uma |
+| `AccountsConfig.swift` / `KeychainService.swift` | quais contas/saldos monitorar + nome do item de Keychain de cada uma |
+| `MonitorPrefs.swift` | quais monitores estão desligados (UserDefaults) |
+| `Balance.swift` / `JevLedger.swift` | parse do saldo DeepSeek; soma do gasto do Jev no log local |
+| `DeepSeekProbe.swift` | DeepSeek: lê a chave + `user/balance` |
 | `Keychain.swift` / `UsageProbe.swift` | Claude: lê token + probe na Messages API |
 | `CodexProbe.swift` | Codex: lê `auth.json` + `wham/usage` |
-| `UsageModel.swift` | estado observável; atualiza os dois provedores em paralelo |
+| `UsageModel.swift` | estado observável; atualiza todos os monitores ligados em paralelo |
 | `AppDelegate.swift` | `NSStatusItem` (imagem de 2 linhas desenhada) + `NSPopover` + timer 5min |
 | `PopoverView.swift` | popover SwiftUI com as duas seções |
 | `main.swift` | `NSApplication` em modo `.accessory` (sem ícone no Dock) |
