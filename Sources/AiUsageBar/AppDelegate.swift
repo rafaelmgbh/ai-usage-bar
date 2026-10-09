@@ -86,11 +86,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Uma linha por conta ligada, rotulada com o label dela: o número na
     /// menubar nunca aparece sem dono. Saldos ficam fora (não são %).
+    /// No placeholder a conta Claude já mostra o número do cache, apagado.
     private func statusRows(placeholder: Bool) -> [Row] {
         var rows = enabledClaude.map { acc in
             Row(brand: acc.label,
-                cells: [("5h", placeholder ? nil : acc.usage?.fiveHourPercent),
-                        ("7d", placeholder ? nil : acc.usage?.sevenDayPercent)],
+                cells: [("5h", acc.usage?.fiveHour?.percent),
+                        ("7d", acc.usage?.sevenDay?.percent)],
                 dim: placeholder || acc.error != nil)
         }
         if model.isEnabled(MonitorID.codex) {
@@ -116,11 +117,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for acc in enabledClaude {
             let name = acc.label.padding(toLength: pad, withPad: " ", startingAt: 0)
             if let u = acc.usage {
-                var l = String(format: "%@  5h %.0f%% %@  ·  7d %.0f%% %@",
-                               name,
-                               u.fiveHourPercent, resetText(u.fiveHourResetEpoch),
-                               u.sevenDayPercent, resetText(u.sevenDayResetEpoch))
-                if let e = acc.error { l += "   ⚠︎ \(short(e))" }
+                let windows = [("5h", u.fiveHour), ("7d", u.sevenDay)]
+                    .compactMap { label, w in w.map { (label, $0) } }
+                    + u.scoped.map { ($0.label, $0.window) }
+                var l = "\(name)  " + windows.map { label, w in
+                    String(format: "%@ %.0f%% %@", label, w.percent, resetText(w.resetEpoch))
+                }.joined(separator: "  ·  ")
+                if let e = acc.error { l += "   ⚠︎ \(short(e)) (último dado às \(hourMinute(u.fetchedAt)))" }
                 out.append(l)
             } else if let e = acc.error {
                 out.append("\(name)  ⚠︎ \(short(e))")

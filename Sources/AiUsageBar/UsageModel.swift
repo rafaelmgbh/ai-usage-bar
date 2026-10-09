@@ -13,7 +13,7 @@ func dbg(_ message: @autoclosure () -> String) {
 /// justamente pra que um erro nunca "vaze" pra linha de outra conta.
 struct AccountUsage: Identifiable {
     let account: ClaudeAccount
-    var usage: Usage?
+    var usage: ClaudeUsage?
     var error: String?
 
     var id: String { account.label }
@@ -21,12 +21,13 @@ struct AccountUsage: Identifiable {
 }
 
 /// Estado observável compartilhado entre a menubar (AppKit) e o popover (SwiftUI).
-/// Cobre N contas Claude (probe Messages API) + Codex (wham/usage) + saldos
+/// Cobre N contas Claude (/api/oauth/usage) + Codex (wham/usage) + saldos
 /// opcionais (DeepSeek, Jev). Monitor desligado não é consultado nem desenhado.
 @MainActor
 final class UsageModel: ObservableObject {
     let config: AppConfig
     private let prefs: MonitorPrefs
+    private let cache: UsageCache
 
     // Claude — uma entrada por conta configurada, na ordem do accounts.json
     @Published var claude: [AccountUsage]
@@ -45,10 +46,17 @@ final class UsageModel: ObservableObject {
     @Published var lastUpdated: Date?
     @Published var isLoading = false
 
-    init(config: AppConfig = AccountsConfig.loadConfig(), prefs: MonitorPrefs = MonitorPrefs()) {
+    init(config: AppConfig = AccountsConfig.loadConfig(), prefs: MonitorPrefs = MonitorPrefs(),
+         cache: UsageCache = UsageCache()) {
         self.config = config
         self.prefs = prefs
-        self.claude = config.claudeAccounts.map { AccountUsage(account: $0) }
+        self.cache = cache
+        // Último número visto de cada conta: a menubar abre com ele (apagado até
+        // o primeiro refresh), não vazia. Janela que renovou nesse meio-tempo zera.
+        let saved = cache.load()
+        self.claude = config.claudeAccounts.map {
+            AccountUsage(account: $0, usage: saved[$0.keychainService]?.rolledOver(now: Date()))
+        }
         self.disabled = prefs.disabled
     }
 
@@ -73,7 +81,7 @@ final class UsageModel: ObservableObject {
         async let j: Void = refreshJev()
         _ = await (c, x, d, j)
         lastUpdated = Date()
-        dbg("fim do refresh: " + claude.map { "\($0.label)=\($0.usage.map { String(format: "%.0f%%", $0.fiveHourPercent) } ?? ($0.error ?? "nil/nil"))" }.joined(separator: " | "))
+        dbg("fim do refresh: " + claude.map { "\($0.label)=\($0.usage?.fiveHour.map { String(format: "%.0f%%", $0.percent) } ?? ($0.error ?? "nil/nil"))" }.joined(separator: " | "))
     }
 
     private func refreshOne(_ id: String) async {
@@ -100,14 +108,14 @@ final class UsageModel: ObservableObject {
         // Indexamos o resultado pela posição da conta: o retorno das tasks chega
         // fora de ordem, e casar por índice é o que impede trocar o número de
         // lugar entre as contas.
-        var results: [Int: Result<Usage, Error>] = [:]
-        await withTaskGroup(of: (Int, Result<Usage, Error>).self) { group in
+        var results: [Int: Result<ClaudeUsage, Error>] = [:]
+        await withTaskGroup(of: (Int, Result<ClaudeUsage, Error>).self) { group in
             for (i, account) in targets {
                 group.addTask {
                     dbg("task \(i) \(account.label) begin service=\(account.keychainService)")
                     do {
                         let u = try await UsageProbe.fetch(account: account)
-                        dbg("task \(i) \(account.label) ok 5h=\(u.fiveHourPercent)")
+                        dbg("task \(i) \(account.label) ok 5h=\(u.fiveHour?.percent ?? -1)")
                         return (i, .success(u))
                     } catch {
                         dbg("task \(i) \(account.label) erro=\(error)")
@@ -122,15 +130,31 @@ final class UsageModel: ObservableObject {
         }
 
         dbg("results keys=\(results.keys.sorted()) claude.count=\(claude.count)")
+        var gotFresh = false
         for (i, result) in results where claude.indices.contains(i) {
             switch result {
             case .success(let u):
                 claude[i].usage = u
                 claude[i].error = nil
+                gotFresh = true
             case .failure(let e):
+                // O número velho fica (com o horário dele no popover), mas a
+                // janela que já renovou zera em vez de mostrar o valor de antes.
+                claude[i].usage = claude[i].usage?.rolledOver(now: Date())
                 claude[i].error = "\(e)"
             }
         }
+        if gotFresh { saveCache() }
+    }
+
+    /// Grava o último dado de todas as contas, inclusive das desligadas: religar
+    /// uma conta mostra o que ela tinha, não vazio.
+    private func saveCache() {
+        var entries = cache.load()
+        for acc in claude {
+            if let u = acc.usage { entries[acc.account.keychainService] = u }
+        }
+        do { try cache.save(entries) } catch { dbg("cache não gravou: \(error)") }
     }
 
     private func refreshCodex() async {

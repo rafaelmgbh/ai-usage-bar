@@ -19,7 +19,9 @@ Codex  5h▕███░░░░▏ 7d▕░░░░░░░▏
 
 > Inspirado na receita de coleta do
 > [oauramos/claude-usage-stick](https://github.com/oauramos/claude-usage-stick) (um monitor de
-> hardware ESP32). Esta é uma reimplementação independente em Swift para macOS.
+> hardware ESP32). Esta é uma reimplementação independente em Swift para macOS. A troca pro
+> endpoint `/api/oauth/usage` e o cache do último uso vieram do
+> [LucasM-Maciel/ticlins-claude-monitor](https://github.com/LucasM-Maciel/ticlins-claude-monitor).
 
 ## Requisitos
 
@@ -71,14 +73,14 @@ Crie `~/.config/ai-usage-bar/accounts.json`:
 - O label é o que aparece na menubar — use algo curto.
 - Sem o arquivo, o app se comporta como antes: uma linha só de Claude.
 
-Cada conta é sondada com o token dela, e os headers de rate-limit voltam da conta que autenticou —
-não há como o consumo ser atribuído à conta errada. De 3 linhas em diante, fonte e barras encolhem
+Cada conta é consultada com o token dela, e o uso volta da conta que autenticou — não há como o
+consumo ser atribuído à conta errada. De 3 linhas em diante, fonte e barras encolhem
 pra caber na altura fixa da menubar.
 
 ### Ligar/desligar monitores
 
 Cada seção do popover tem um switch. Desligar um monitor tira a linha dele da menubar e para de
-consultá-lo (conta Claude desligada = nenhum probe). A escolha sobrevive a reinícios; religar
+consultá-lo (conta Claude desligada = nenhuma requisição). A escolha sobrevive a reinícios; religar
 atualiza aquele monitor na hora. Com tudo desligado a menubar mostra um `AI` apagado, pra ainda dar
 pra abrir o popover.
 
@@ -108,13 +110,16 @@ um é opt-in no `accounts.json`:
 
 | Provedor | Origem do token | Endpoint | Custo de quota |
 |---|---|---|---|
-| **Claude** | Keychain (`Claude Code-credentials` → `claudeAiOauth.accessToken`) | `POST api.anthropic.com/v1/messages` (probe `max_tokens:1`) → lê headers `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` | ínfimo (1 request mínimo / refresh) |
+| **Claude** | Keychain (`Claude Code-credentials` → `claudeAiOauth.accessToken`) | `GET api.anthropic.com/api/oauth/usage` (o mesmo do `/usage`) → `five_hour`/`seven_day` `{utilization,resets_at}` + limites semanais por modelo em `limits[]`. Se o endpoint sumir, cai no probe `max_tokens:1` da Messages API (headers de rate-limit) | **nenhum** (endpoint de status; a reserva gasta 1 request mínimo) |
 | **Codex** | `~/.codex/auth.json` (`tokens.access_token` + `account_id`) | `GET chatgpt.com/backend-api/wham/usage` → `rate_limit.{primary,secondary}_window.{used_percent,reset_at}` | **nenhum** (endpoint de status) |
 | **DeepSeek** *(opt-in)* | item genérico do Keychain (`DEEPSEEK_API_KEY`) | `GET api.deepseek.com/user/balance` → `balance_infos[].total_balance` | **nenhum** |
 | **Jev** *(opt-in)* | — | SQLite local `~/.local/share/jev/decisions.db` → `SUM(custo_usd)` | **nenhum** (sem rede) |
 
 Atualiza a cada 5 minutos. O token é relido a cada ciclo, então quando o CLI o renova o app
-pega o novo sozinho.
+pega o novo sozinho. O último uso bom de cada conta Claude fica em cache em
+`~/Library/Caches/io.github.rafaelmgbh.ai-usage-bar/claude-usage.json`: o app abre com ele
+(apagado até o primeiro refresh) e, se uma consulta falha (sem rede, 429, token vencido), continua
+mostrando ele com o horário — janela que já renovou nesse meio-tempo cai pra 0%.
 
 Estrutura do código:
 
@@ -124,7 +129,8 @@ Estrutura do código:
 | `MonitorPrefs.swift` | quais monitores estão desligados (UserDefaults) |
 | `Balance.swift` / `JevLedger.swift` | parse do saldo DeepSeek; soma do gasto do Jev no log local |
 | `DeepSeekProbe.swift` | DeepSeek: lê a chave + `user/balance` |
-| `Keychain.swift` / `UsageProbe.swift` | Claude: lê token + probe na Messages API |
+| `ClaudeUsage.swift` / `UsageCache.swift` | parse do `/api/oauth/usage`, zera janela que já renovou; cache do último uso em disco |
+| `Keychain.swift` / `UsageProbe.swift` | Claude: lê token + `/api/oauth/usage` (probe na Messages API como reserva) |
 | `CodexProbe.swift` | Codex: lê `auth.json` + `wham/usage` |
 | `UsageModel.swift` | estado observável; atualiza todos os monitores ligados em paralelo |
 | `AppDelegate.swift` | `NSStatusItem` (imagem de 2 linhas desenhada) + `NSPopover` + timer 5min |
@@ -133,8 +139,8 @@ Estrutura do código:
 
 ## Privacidade & ressalvas
 
-- Os tokens são lidos **localmente** e só vão pro endpoint do próprio provedor. Nada é
-  armazenado, logado ou enviado pra outro lugar.
+- Os tokens são lidos **localmente** e só vão pro endpoint do próprio provedor. Tokens nunca
+  são armazenados, logados ou enviados pra outro lugar; só os números de uso ficam em cache.
 - Usa o token da sua **assinatura** — ok pra uso pessoal; você é responsável pelos Termos de
   Uso do provedor.
 - O app **não** é assinado/notarizado pra distribuição (compile você mesmo).
@@ -150,4 +156,5 @@ Se preferir uma ferramenta pronta, mantida e multi-provedor:
 ## Licença
 
 [MIT](LICENSE) © Rafael Araujo. Inspirado em
-[oauramos/claude-usage-stick](https://github.com/oauramos/claude-usage-stick) (MIT).
+[oauramos/claude-usage-stick](https://github.com/oauramos/claude-usage-stick) (MIT) e
+[LucasM-Maciel/ticlins-claude-monitor](https://github.com/LucasM-Maciel/ticlins-claude-monitor) (MIT).

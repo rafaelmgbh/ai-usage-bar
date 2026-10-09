@@ -25,11 +25,9 @@ struct PopoverView: View {
                 let id = MonitorID.claude(acc.label)
                 ProviderSection(
                     name: acc.label,
-                    rows: acc.usage.map {
-                        [("5h", $0.fiveHourPercent, resetText($0.fiveHourResetEpoch)),
-                         ("7d", $0.sevenDayPercent, resetText($0.sevenDayResetEpoch))]
-                    },
+                    rows: acc.usage.map(claudeRows),
                     error: acc.error,
+                    staleSince: acc.error == nil ? nil : acc.usage?.fetchedAt,
                     isOn: model.isEnabled(id),
                     onToggle: { model.setEnabled(id, $0) }
                 )
@@ -113,11 +111,26 @@ private struct MonitorSection<Content: View>: View {
     }
 }
 
+/// 5h e 7d (as que vierem) + uma linha por limite de modelo ("Fable", semanal).
+private func claudeRows(_ u: ClaudeUsage) -> [(label: String, percent: Double, reset: String)] {
+    var rows = [("5h", u.fiveHour), ("7d", u.sevenDay)].compactMap { label, w in
+        w.map { (label: label, percent: $0.percent, reset: resetText($0.resetEpoch)) }
+    }
+    for s in u.scoped {
+        let reset = resetText(s.window.resetEpoch)
+        rows.append((label: s.label, percent: s.window.percent,
+                     reset: reset.isEmpty ? "semanal" : "semanal · \(reset)"))
+    }
+    return rows
+}
+
 /// Seção de provider com barras (ou mensagem de erro/sem-dado).
 private struct ProviderSection: View {
     let name: String
     let rows: [(label: String, percent: Double, reset: String)]?
     let error: String?
+    /// Horário do número exibido quando a última consulta falhou.
+    var staleSince: Date? = nil
     let isOn: Bool
     let onToggle: (Bool) -> Void
 
@@ -129,6 +142,10 @@ private struct ProviderSection: View {
                 }
                 if let error {
                     ErrorLabel(error: error)
+                }
+                if let staleSince {
+                    Text("último dado às \(hourMinute(staleSince))")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             } else if let error {
                 ErrorLabel(error: error)
@@ -321,6 +338,13 @@ private func prettyError(_ err: String) -> String {
 private func dayMonth(_ iso: String) -> String {
     let p = iso.split(separator: "-")
     return p.count == 3 ? "\(p[2])/\(p[1])" : iso
+}
+
+/// "14:05" — horário de um dado que pode estar velho.
+func hourMinute(_ d: Date) -> String {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm"
+    return f.string(from: d)
 }
 
 private func timeStr(_ d: Date) -> String {
