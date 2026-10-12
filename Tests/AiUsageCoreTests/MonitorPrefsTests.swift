@@ -42,4 +42,22 @@ final class MonitorPrefsTests: XCTestCase {
         XCTAssertNotEqual(MonitorID.claude("codex"), MonitorID.codex)
         XCTAssertNotEqual(MonitorID.claude("jev"), MonitorID.jev)
     }
+
+    /// Menubar nasce compacta (ícone + bolinha); as barras são opt-in.
+    func testMenubarStartsCompact() {
+        XCTAssertTrue(MonitorPrefs(defaults: defaults).compactMenubar)
+    }
+
+    func testMenubarStyleSurvivesANewInstance() {
+        MonitorPrefs(defaults: defaults).setCompactMenubar(false)
+        let reopened = MonitorPrefs(defaults: defaults)
+        XCTAssertFalse(reopened.compactMenubar)
+        XCTAssertEqual(reopened.disabled, [])
+    }
+
+    /// Uma conta Claude chamada "sessions" não desliga a seção de sessões.
+    func testSessionsIdIsItsOwn() {
+        XCTAssertNotEqual(MonitorID.claude("sessions"), MonitorID.sessions)
+        XCTAssertTrue(MonitorPrefs(defaults: defaults).isEnabled(MonitorID.sessions))
+    }
 }

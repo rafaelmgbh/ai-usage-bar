@@ -1,12 +1,13 @@
 import SwiftUI
 import AiUsageCore
 
-/// Popover com uma seção por conta Claude (5h/7d) + Codex (5h/semana), barras horizontais
-/// arredondadas + countdown de reset, e os saldos configurados (DeepSeek, Jev). Cada
-/// seção tem um switch que liga/desliga o monitor. Rodapé com última atualização +
-/// atualizar + sair.
+/// Popover com a seção de sessões do Claude Code no topo, uma seção por conta Claude
+/// (5h/7d) + Codex (5h/semana), barras horizontais arredondadas + countdown de reset, e
+/// os saldos configurados (DeepSeek, Jev). Cada seção tem um switch que liga/desliga o
+/// monitor. Rodapé com última atualização + atualizar + sair.
 struct PopoverView: View {
     @ObservedObject var model: UsageModel
+    @ObservedObject var sessions: SessionMonitor
     var onRefresh: () -> Void
     var onQuit: () -> Void
 
@@ -19,6 +20,14 @@ struct PopoverView: View {
                 Spacer()
                 if model.isLoading { ProgressView().controlSize(.small) }
             }
+
+            SessionsSection(
+                monitor: sessions,
+                isOn: model.isEnabled(MonitorID.sessions),
+                onToggle: { model.setEnabled(MonitorID.sessions, $0) }
+            )
+
+            Divider()
 
             // Claude — uma seção por conta, cada uma com o seu próprio erro
             ForEach(model.claude) { acc in
@@ -67,6 +76,16 @@ struct PopoverView: View {
                 Divider()
             }
 
+            HStack {
+                Text("Barra compacta").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Toggle("", isOn: Binding(get: { model.compactMenubar }, set: model.setCompactMenubar))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+                    .help("Ligado: só ícone e bolinha de nível na barra de menus. Desligado: barras por conta.")
+            }
+
             HStack(spacing: 10) {
                 Button(action: onRefresh) { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain).help("Atualizar agora")
@@ -86,7 +105,7 @@ struct PopoverView: View {
 
 /// Cabeçalho de um monitor com o switch de liga/desliga. Desligado, só o
 /// cabeçalho fica — é dele que se religa.
-private struct MonitorSection<Content: View>: View {
+struct MonitorSection<Content: View>: View {
     let name: String
     let isOn: Bool
     let onToggle: (Bool) -> Void

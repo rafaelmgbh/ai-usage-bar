@@ -7,6 +7,9 @@ import AiUsageCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let model = UsageModel()
+    /// Sessões do Claude Code. Lazy: precisa do `config` que o model já leu.
+    private(set) lazy var sessions = SessionMonitor(config: model.config)
+    private lazy var notifier = SessionNotifier()
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -23,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let btn = statusItem.button {
             btn.imagePosition = .imageOnly
-            btn.image = Self.drawStatusImage(rows: statusRows(placeholder: true))
+            btn.image = statusImage(placeholder: true)
             btn.toolTip = "carregando…"
             btn.action = #selector(togglePopover)
             btn.target = self
@@ -35,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let host = NSHostingController(
             rootView: PopoverView(
                 model: model,
+                sessions: sessions,
                 onRefresh: { [weak self] in self?.refresh() },
                 onQuit: { NSApp.terminate(nil) }
             )
@@ -55,9 +59,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.objectWillChange
             .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.syncSessions()
+                    self?.updateStatusItem()
+                }
+            }
+            .store(in: &cancellables)
+
+        // Sessões mudam a cada poucos segundos, sem passar pelo model.
+        sessions.objectWillChange
+            .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
                 Task { @MainActor in self?.updateStatusItem() }
             }
             .store(in: &cancellables)
+        sessions.onEvents = { [weak self] events in
+            guard let self else { return }
+            self.notifier.deliver(events, showAccount: self.sessions.showAccount)
+        }
+        syncSessions()
 
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
@@ -72,16 +92,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Menubar (uma linha por conta Claude + uma do Codex, só as ligadas)
+    /// O switch da seção "Sessões" liga/desliga o observador. Ligar pede a permissão
+    /// de notificação (o macOS só pergunta na 1ª vez).
+    private func syncSessions() {
+        let on = model.isEnabled(MonitorID.sessions)
+        if on && !sessions.isRunning { notifier.requestAuthorization() }
+        sessions.setRunning(on)
+    }
+
+    // MARK: - Menubar (compacta: ícone + bolinha; ou uma linha por conta ligada)
 
     private func updateStatusItem() {
         guard let btn = statusItem.button else { return }
-        btn.image = Self.drawStatusImage(rows: statusRows(placeholder: false))
+        btn.image = statusImage(placeholder: false)
         btn.toolTip = buildTooltip()
+    }
+
+    /// No placeholder (antes do 1º refresh) a bolinha fica cinza e o bloco de sessões some.
+    private func statusImage(placeholder: Bool) -> NSImage {
+        if model.compactMenubar {
+            return Self.drawCompactImage(level: placeholder ? .unknown : overallLevel,
+                                         needsYou: placeholder ? 0 : sessionBadge?.needsYou ?? 0)
+        }
+        return Self.drawStatusImage(rows: statusRows(placeholder: placeholder),
+                                    badge: placeholder ? nil : sessionBadge)
+    }
+
+    /// Cor da bolinha: o pior nível entre os monitores ligados, saldos inclusive.
+    private var overallLevel: StatusLevel {
+        var monitors = enabledClaude.map { acc -> StatusLevel in
+            let u = acc.usage
+            let windows = [u?.fiveHour, u?.sevenDay].compactMap { $0 } + (u?.scoped.map(\.window) ?? [])
+            return .monitor(windows.map { .of(percent: $0.percent) }, failed: acc.error != nil)
+        }
+        if model.isEnabled(MonitorID.codex) {
+            let percents = model.codexUsage.map { [$0.fiveHourPercent, $0.weeklyPercent] } ?? []
+            monitors.append(.monitor(percents.map { .of(percent: $0) }, failed: model.codexError != nil))
+        }
+        if let cfg = model.config.deepseek, model.isEnabled(MonitorID.deepseek) {
+            let balance = model.deepseek
+            let level = balance?.primary.map {
+                BalanceLevel.of(amount: $0.total, alertBelow: cfg.alertBelow,
+                                available: balance?.isAvailable ?? false)
+            }
+            monitors.append(.monitor(level.map { [.of(balance: $0)] } ?? [],
+                                     failed: model.deepseekError != nil))
+        }
+        // Jev sem creditUSD só mostra gasto: não tem limite pra estourar.
+        if let cfg = model.config.jev, cfg.creditUSD != nil, model.isEnabled(MonitorID.jev) {
+            let level = model.jev?.balanceUSD.map { BalanceLevel.of(amount: $0, alertBelow: cfg.alertBelow) }
+            monitors.append(.monitor(level.map { [.of(balance: $0)] } ?? [],
+                                     failed: model.jevError != nil))
+        }
+        return .overall(monitors)
     }
 
     private var enabledClaude: [AccountUsage] {
         model.claude.filter { model.isEnabled(MonitorID.claude($0.label)) }
+    }
+
+    /// Bloco de sessões da menubar; nil = some (switch desligado ou tudo zerado).
+    private var sessionBadge: SessionBadge? {
+        guard model.isEnabled(MonitorID.sessions) else { return nil }
+        let badge = SessionBadge(working: sessions.workingCount, needsYou: sessions.needsYouCount)
+        return badge.isEmpty ? nil : badge
     }
 
     /// Uma linha por conta ligada, rotulada com o label dela: o número na
@@ -169,6 +243,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Horário absoluto: o tooltip só é refeito quando algo muda, e "há 2 min" envelheceria.
+        if model.isEnabled(MonitorID.sessions), !sessions.rows.isEmpty {
+            if !out.isEmpty { out.append("") }
+            out += sessions.rows.map { "\($0.name)  \($0.state.label) desde \(hourMinute($0.since))" }
+        }
+
         return out.isEmpty ? "carregando…" : out.joined(separator: "\n")
     }
 
@@ -182,6 +262,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let brand: String
         let cells: [(label: String, pct: Double?)]
         let dim: Bool
+    }
+
+    private struct SessionBadge {
+        let working: Int
+        let needsYou: Int
+        var isEmpty: Bool { working == 0 && needsYou == 0 }
     }
 
     /// Tamanhos do desenho. A imagem da menubar tem altura fixa (24pt), então
@@ -212,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Desenha N linhas (marca + células rotuladas), colunas alinhadas verticalmente.
-    private static func drawStatusImage(rows: [Row]) -> NSImage {
+    private static func drawStatusImage(rows: [Row], badge: SessionBadge?) -> NSImage {
         let h: CGFloat = 24
         let rowH = h / CGFloat(max(rows.count, 1))
         let m = Metrics.forRows(rows.count)
@@ -228,7 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var width: CGFloat = 1 + brandColW
         for j in 0..<nCols { width += m.gapBig + labelColW[j] + m.gapSmall + m.barW }
-        width += 3
+        let badgeX = width + badgeGap
+        width += badgeWidth(badge) + 3
 
         return NSImage(size: NSSize(width: width, height: h), flipped: false) { _ in
             for (i, r) in rows.enumerated() {
@@ -255,8 +342,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     x = bx + m.barW
                 }
             }
+            if let badge { drawBadge(badge, x: badgeX, h: h) }
             return true
         }
+    }
+
+    private static let compactSymbol = NSImage(
+        systemSymbolName: "gauge.medium", accessibilityDescription: "Uso do plano"
+    )?.withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+
+    /// Medidor com a bolinha do nível geral no canto; "● N" ao lado só quando
+    /// há sessão esperando por você.
+    private static func drawCompactImage(level: StatusLevel, needsYou: Int) -> NSImage {
+        let h: CGFloat = 24
+        let dot: CGFloat = 7
+        let iconSize = compactSymbol?.size ?? NSSize(width: 16, height: 16)
+        let iconRect = NSRect(x: 1, y: (h - iconSize.height) / 2,
+                              width: iconSize.width, height: iconSize.height)
+        let dotRect = NSRect(x: iconRect.maxX - 4.5, y: iconRect.minY - 1, width: dot, height: dot)
+
+        let badge = needsYou > 0 ? SessionBadge(working: 0, needsYou: needsYou) : nil
+        var width = dotRect.maxX
+        let badgeX = width + badgeGap
+        width += badgeWidth(badge) + 1
+
+        return NSImage(size: NSSize(width: width, height: h), flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current else { return false }
+            // Camada à parte: o sourceIn tinge só o símbolo e o destinationOut abre
+            // o recorte em volta da bolinha sem furar o que está atrás da imagem.
+            ctx.cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
+            compactSymbol?.draw(in: iconRect)
+            NSColor.labelColor.setFill()
+            iconRect.fill(using: .sourceIn)
+            ctx.compositingOperation = .destinationOut
+            NSBezierPath(ovalIn: dotRect.insetBy(dx: -1.2, dy: -1.2)).fill()
+            ctx.compositingOperation = .sourceOver
+            ctx.cgContext.endTransparencyLayer()
+
+            levelColor(level).setFill()
+            NSBezierPath(ovalIn: dotRect).fill()
+
+            if let badge {
+                drawBadgeLine(count: badge.needsYou, x: badgeX, midY: h / 2, color: .systemOrange, round: true)
+            }
+            return true
+        }
+    }
+
+    private static let badgeFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
+    private static let badgeGlyph: CGFloat = 6
+    private static let badgeGap: CGFloat = 8   // barras → bloco
+
+    private static func badgeWidth(_ badge: SessionBadge?) -> CGFloat {
+        guard let badge else { return 0 }
+        let widest = [badge.working, badge.needsYou].filter { $0 > 0 }
+            .map { textWidth("\($0)", badgeFont) }.max() ?? 0
+        return badgeGap + badgeGlyph + 3 + widest
+    }
+
+    /// "▶ N" trabalhando em cima, "● N" precisa de você (laranja) embaixo; contagem
+    /// zero não desenha a linha. Triângulo e círculo saem do NSBezierPath porque o
+    /// caractere ▶ vira emoji colorido em algumas fontes.
+    private static func drawBadge(_ badge: SessionBadge, x: CGFloat, h: CGFloat) {
+        drawBadgeLine(count: badge.working, x: x, midY: h * 0.75, color: .labelColor, round: false)
+        drawBadgeLine(count: badge.needsYou, x: x, midY: h * 0.25, color: .systemOrange, round: true)
+    }
+
+    private static func drawBadgeLine(count: Int, x: CGFloat, midY: CGFloat, color: NSColor, round: Bool) {
+        guard count > 0 else { return }
+        let g = badgeGlyph
+        color.setFill()
+        let rect = NSRect(x: x, y: midY - g / 2, width: g, height: g)
+        if round {
+            NSBezierPath(ovalIn: rect).fill()
+        } else {
+            let tri = NSBezierPath()
+            tri.move(to: NSPoint(x: rect.minX, y: rect.minY))
+            tri.line(to: NSPoint(x: rect.maxX, y: rect.midY))
+            tri.line(to: NSPoint(x: rect.minX, y: rect.maxY))
+            tri.close()
+            tri.fill()
+        }
+        let attrs: [NSAttributedString.Key: Any] = [.font: badgeFont, .foregroundColor: color]
+        let text = "\(count)" as NSString
+        let size = text.size(withAttributes: attrs)
+        text.draw(at: NSPoint(x: x + g + 3, y: midY - size.height / 2), withAttributes: attrs)
     }
 
     private static func drawBar(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, percent: Double?, dim: Bool) {
@@ -271,16 +441,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fillW = max(h, w * frac)
         let fill = NSBezierPath(roundedRect: NSRect(x: x, y: y, width: fillW, height: h),
                                 xRadius: radius, yRadius: radius)
-        var c = barColor(forPercent: p)
+        var c = levelColor(.of(percent: p))
         if dim { c = c.withAlphaComponent(0.4) }
         c.setFill()
         fill.fill()
     }
 
-    private static func barColor(forPercent p: Double) -> NSColor {
-        if p >= 95 { return .systemRed }
-        if p >= 80 { return .systemOrange }
-        return .systemGreen
+    private static func levelColor(_ level: StatusLevel) -> NSColor {
+        switch level {
+        case .ok: return .systemGreen
+        case .warn: return .systemOrange
+        case .crit: return .systemRed
+        case .unknown: return .systemGray
+        }
     }
 
     // MARK: - Popover

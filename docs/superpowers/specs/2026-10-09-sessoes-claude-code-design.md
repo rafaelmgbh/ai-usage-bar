@@ -44,6 +44,13 @@ mudança de estado (inclusive Esc). Formato observado na 2.1.295:
 
 - `status` ∈ `busy` · `shell` · `idle` · `waiting`; com `waiting` vem `waitingFor` ∈
   `input needed` · `dialog open` · `goal proposal` · `sandbox request` (+ outros futuros).
+- `shell` **não** é "rodando comando": é `idle` com Bash em segundo plano ainda vivo
+  (rodapé "1 shell still running"). No binário da 2.1.296:
+  `status === "idle" && temBashDeFundo ? "shell" : status`. O turno já acabou. `!cmd`
+  marca `busy`.
+- `busy` também persiste com subagente/workflow de fundo ativo (`delegatedActive`),
+  mesmo depois do turno principal acabar: esse fim de turno o registro não mostra.
+  Quem mostra é o hook `Stop` (seção 3).
 - `kind` ∈ `interactive` · `bg` · `daemon` · `daemon-worker`. Só `interactive` entra.
 - `procStart` é ctime em **UTC**.
 - Na mesma pasta há `<pid>.<hash>.key` com token de peer. **O app nunca abre `.key`**;
@@ -75,6 +82,36 @@ código do binário só dispara notificação, e o status segue `busy`. Para iss
   `~/.claude-conta2/settings.json` é symlink do da conta 1 → o hook vale pras duas.
 - Se o matcher por `notification_type` não pegar na prática: tirar o matcher e filtrar
   pelo `notification_type` no app (o hook roda raramente; custo irrelevante).
+
+### 3. Hook `Stop` (fim de turno com trabalho em segundo plano)
+
+Turno que acaba com subagente ou workflow rodando deixa o registro em `busy`: sem outro
+sinal, o "terminou" só sairia quando o último agente acabasse. O hook `Stop` dispara no
+fim de todo turno do agente principal (subagente dispara `SubagentStop`, que não entra):
+
+```json
+"Stop": [
+  { "hooks": [{ "type": "command", "async": true,
+      "command": "d=\"$HOME/.local/state/ai-usage-bar/inbox\"; mkdir -p \"$d\" && chmod 700 \"$d\" && s=$(grep -o '\"session_id\" *: *\"[^\"]*\"' | head -n 1) && [ -n \"$s\" ] && t=$(mktemp \"$d/.tmp.XXXXXX\") && printf '{\"hook_event_name\":\"Stop\",%s}' \"$s\" > \"$t\" && mv \"$t\" \"$d/ev-${t##*.}.json\"; find \"$d\" -name 'ev-*.json' -mmin +10 -delete 2>/dev/null; exit 0" }] }
+]
+```
+
+- **Não despeja o stdin.** O payload do `Stop` traz `last_assistant_message` (a última
+  resposta inteira) e `background_tasks` (com os comandos). O hook extrai o `session_id`
+  com `grep -o … | head -n 1` (o do topo vem primeiro; dentro de string as aspas estão
+  escapadas e não casam) e grava só `{"hook_event_name":"Stop","session_id":"…"}`.
+  Sem `jq`: o macOS 13 e o 14 não trazem.
+- Mesma inbox e mesmo `.tmp.*` → `ev-*.json`. O app separa os dois hooks pelo
+  `hook_event_name`: evento com esse campo diferente de `Notification` nunca vira
+  pedido de permissão.
+- `async`: não atrasa o fim do turno. A ordem entre o arquivo e o registro não importa
+  (regra em "Eventos de aviso").
+- stdin sem `session_id` não cria arquivo. Sempre `exit 0`.
+- O `find … -mmin +10 -delete` do fim apaga evento com mais de 10 min, o prazo depois
+  do qual o app descarta de qualquer jeito (`SessionInbox.maxAge`). Quem esvazia a
+  inbox é o app: com ele fechado, ou com a seção desligada, cada turno deixaria um
+  arquivo e a pasta cresceria sem limite. Custo medido: ~14 ms por turno, fora do
+  caminho (`async`).
 
 ## Componentes
 
@@ -113,8 +150,8 @@ código do binário só dispara notificação, e o status segue `busy`. Para iss
 
 | Estado | Origem |
 |---|---|
-| trabalhando | `busy`, `shell` |
-| livre | `idle` |
+| trabalhando | `busy` |
+| livre | `idle`, `shell` |
 | precisa de você | `waiting` (qualquer `waitingFor`) **ou** permissão pendente |
 
 ### Permissão pendente
@@ -131,6 +168,13 @@ qualquer um acontece:
 - **terminou** — trabalhando → livre, para o mesmo `pid` + `sessionId`, depois de
   ≥ **10 s** em trabalhando (corta `!` e slash command local). Esperando → livre não
   avisa.
+- **terminou, pelo hook `Stop`** — evento do hook com o registro ainda em `busy`,
+  ≥ 10 s depois do início do turno. A partir dele o relógio do turno recomeça no
+  `Stop`: o registro indo pra livre um instante depois não avisa de novo (turno
+  comum), e o que seguir rodando avisa quando acabar, seja por outro `Stop` (o Claude
+  retomou sozinho quando o agente terminou) ou pelo registro. `Stop` com a sessão
+  livre, em `shell` ou em `waiting` é ignorado (o registro já cobre), assim como
+  `Stop` mais velho que o início do turno atual. A linha segue "trabalhando".
 - **pede permissão** — evento do hook novo; ou passagem para `waiting` com
   `waitingFor == "input needed"`. `dialog open` e os demais só aparecem na lista.
 - **resolvido** — permissão pendente que caiu → remove o banner daquela sessão.
@@ -139,7 +183,7 @@ qualquer um acontece:
 
 | Caso | Comportamento |
 |---|---|
-| App abrindo | 1º retrato vira base, sem aviso. Eventos da inbox com mais de 10 min são descartados. |
+| App abrindo | 1º retrato vira base, sem aviso (nem por `Stop` que já estava na inbox). Eventos da inbox com mais de 10 min são descartados. |
 | `/clear` (mesmo pid, `sessionId` novo) | Refaz a base daquela linha, sem aviso. |
 | Processo morto com arquivo ficando | Sessão some da lista. Arquivo do Claude Code nunca é apagado. |
 | PID reaproveitado | `procStart` (UTC, espaços colapsados) ≠ `pbi_start_tvsec` ± 2 s → morto. Sem `procStart`: só `kill(pid, 0)`. |
@@ -194,6 +238,10 @@ Sessões                                    [on]
 - Identificador = `sessionId`: banner novo da mesma sessão substitui o anterior.
 - Silêncio: iTerm na frente **e** `frontmostTTY()` = tty da sessão → sem banner e sem
   som.
+- Silêncio também para sessão que roda dentro de um app que já avisa por conta própria
+  (`SessionHost.selfNotifying`, hoje `Clark.app`): o app é achado subindo pela árvore de
+  processos (pai e executável via libproc, até 12 degraus). Vale para "terminou" e para
+  "precisa de você"; a sessão continua na lista e não entra na conta do agrupamento.
 - Clique no banner → foca a aba (tty vai no `userInfo`).
 - `Resources/Info.plist` ganha `NSAppleEventsUsageDescription`: "Para focar a aba do
   iTerm da sessão do Claude Code."
@@ -216,7 +264,13 @@ Sessões                                    [on]
   agrupamento com 3+ eventos; `input needed` avisa e `dialog open` não.
 - `ClaudeSessionTests`: fixture real anonimizada; campo extra ignorado; `kind`
   não-interativo → nil; status desconhecido → livre; JSON quebrado → nil.
-- `PermissionEventTests`: payload real do hook; sem `session_id` → nil.
+- `PermissionEventTests`: payload real do hook; sem `session_id` → nil; evento do
+  hook `Stop` → nil.
+- `TurnEndEventTests`: o que o hook `Stop` grava; outro `hook_event_name` → nil.
+- `SessionTrackerTests`, bloco do `Stop`: avisa com o registro em `busy`; um aviso só
+  quando o registro vai pra livre em seguida ou na mesma varredura; turno curto, base,
+  `Stop` atrasado, sessão desconhecida e `waiting` não avisam; segundo `Stop` no mesmo
+  trecho `busy` avisa de novo.
 - Manual: banner + som, clique focando a aba certa, silêncio com a aba na frente,
   Automação negada, notificação negada, e o hook disparando com `permission_prompt`
   (confirma também que o registro fica `busy` durante o pedido).
@@ -233,3 +287,10 @@ hook.
   parser tolerante, fixtures e a mensagem "formato desconhecido" em vez de dado falso.
 - **Transcript avançando por outro motivo** durante o pedido de permissão (ex.: anexo
   de hook) → a marca "precisa de você" pode cair cedo; o aviso já terá sido dado.
+- **Depois de um `Stop` com o registro em `busy`** o app não vê o próximo turno
+  começar: o registro não muda. O turno mínimo de 10 s passa a contar do `Stop`
+  anterior, então um prompt rápido digitado com agente rodando pode avisar "terminou"
+  (some se a aba estiver em foco, que é o caso comum).
+- **Outro hook `Stop` que bloqueia a parada** (o Claude continua trabalhando) gera um
+  "terminou" a cada tentativa de parar com ≥ 10 s de intervalo. O banner tem o mesmo
+  id, então substitui o anterior.

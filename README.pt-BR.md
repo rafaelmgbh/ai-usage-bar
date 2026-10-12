@@ -77,12 +77,67 @@ Cada conta é consultada com o token dela, e o uso volta da conta que autenticou
 consumo ser atribuído à conta errada. De 3 linhas em diante, fonte e barras encolhem
 pra caber na altura fixa da menubar.
 
+### Menubar compacta
+
+Por padrão a menubar mostra só um ícone de medidor com uma bolinha: o pior nível entre todos os
+monitores ligados (janelas de uso e saldos).
+
+| Bolinha | Significado |
+|---|---|
+| verde | tudo abaixo de 80% e saldos acima do alerta |
+| laranja | alguma janela em 80% ou mais, ou saldo abaixo do alerta |
+| vermelha | alguma janela em 95% ou mais, ou saldo zerado |
+| cinza | sem dado ainda, monitor que falhou (token expirado) ou tudo desligado |
+
+Monitor que falhou conta como cinza, a não ser que o último número dele já fosse laranja ou
+vermelho. Passe o mouse no ícone pra ver os números. Do bloco de sessões aparece só o `● N`
+(esperando por você). Desligue **Barra compacta** no popover pra voltar às barras por conta.
+
 ### Ligar/desligar monitores
 
 Cada seção do popover tem um switch. Desligar um monitor tira a linha dele da menubar e para de
 consultá-lo (conta Claude desligada = nenhuma requisição). A escolha sobrevive a reinícios; religar
 atualiza aquele monitor na hora. Com tudo desligado a menubar mostra um `AI` apagado, pra ainda dar
 pra abrir o popover.
+
+### Sessões do Claude Code
+
+A seção **Sessões**, no topo do popover, lista cada sessão interativa do Claude Code das contas
+configuradas. Mostra se ela está trabalhando, livre ou esperando por você (permissão ou pergunta),
+e há quanto tempo. A menubar ganha um bloco à direita das barras, com `▶ N` trabalhando e `● N`
+(laranja) precisando de você. O bloco some quando os dois são zero. Quando uma sessão termina um
+turno de 10 s ou mais, ou precisa de você, chega uma notificação do macOS com som. Clicar nela (ou
+na linha) foca a aba exata do iTerm2. A aba que você já está olhando não gera aviso. Sessão que roda
+dentro de um app que já avisa por conta própria (hoje o [Clark](https://github.com/rafaelmgbh/clark))
+também não: seria o segundo aviso do mesmo fato. Ela continua na lista do popover.
+
+O estado vem do registro que o Claude Code mantém em `<configDir>/sessions/<pid>.json`. É formato
+interno: se um update mudar, a seção avisa em vez de chutar. Duas coisas não aparecem ali, e cada
+uma precisa de um hook no `~/.claude/settings.json`: o pedido de permissão comum, e o turno que
+acaba com subagente ou workflow ainda rodando em segundo plano (a sessão segue `busy`). Eles entram
+à mão, uma vez só, porque o app nunca edita suas configurações:
+
+```json
+"Notification": [
+  { "matcher": "permission_prompt|elicitation_dialog",
+    "hooks": [{ "type": "command",
+      "command": "d=\"$HOME/.local/state/ai-usage-bar/inbox\"; mkdir -p \"$d\" && chmod 700 \"$d\" && t=$(mktemp \"$d/.tmp.XXXXXX\") && cat > \"$t\" && mv \"$t\" \"$d/ev-${t##*.}.json\"; exit 0" }] }
+],
+"Stop": [
+  { "hooks": [{ "type": "command", "async": true,
+      "command": "d=\"$HOME/.local/state/ai-usage-bar/inbox\"; mkdir -p \"$d\" && chmod 700 \"$d\" && s=$(grep -o '\"session_id\" *: *\"[^\"]*\"' | head -n 1) && [ -n \"$s\" ] && t=$(mktemp \"$d/.tmp.XXXXXX\") && printf '{\"hook_event_name\":\"Stop\",%s}' \"$s\" > \"$t\" && mv \"$t\" \"$d/ev-${t##*.}.json\"; find \"$d\" -name 'ev-*.json' -mmin +10 -delete 2>/dev/null; exit 0" }] }
+]
+```
+
+Os dois hooks só despejam um evento numa inbox privada, que o app lê e apaga. O payload do `Stop`
+traz a última resposta do Claude, então esse hook grava o id da sessão e mais nada. Eles sempre
+saem com 0 e nunca travam a sessão. O `Stop` dispara em todo turno, então esse hook também apaga
+evento com mais de 10 minutos: a inbox fica pequena mesmo com o app fechado. Sem os hooks, todo o
+resto funciona: só faltam esses dois avisos.
+
+O macOS pede duas permissões, cada uma na primeira vez que for necessária:
+- **Automação**, para controlar o iTerm2, no primeiro clique;
+- **Notificações**, no primeiro aviso.
 
 ### Saldos de API: DeepSeek e Jev (opcional)
 
@@ -126,7 +181,8 @@ Estrutura do código:
 | Arquivo | Papel |
 |---|---|
 | `AccountsConfig.swift` / `KeychainService.swift` | quais contas/saldos monitorar + nome do item de Keychain de cada uma |
-| `MonitorPrefs.swift` | quais monitores estão desligados (UserDefaults) |
+| `MonitorPrefs.swift` | quais monitores estão desligados + menubar compacta ligada/desligada (UserDefaults) |
+| `StatusLevel.swift` | nível geral por trás da bolinha da menubar compacta |
 | `Balance.swift` / `JevLedger.swift` | parse do saldo DeepSeek; soma do gasto do Jev no log local |
 | `DeepSeekProbe.swift` | DeepSeek: lê a chave + `user/balance` |
 | `ClaudeUsage.swift` / `UsageCache.swift` | parse do `/api/oauth/usage`, zera janela que já renovou; cache do último uso em disco |
@@ -135,6 +191,11 @@ Estrutura do código:
 | `UsageModel.swift` | estado observável; atualiza todos os monitores ligados em paralelo |
 | `AppDelegate.swift` | `NSStatusItem` (imagem de 2 linhas desenhada) + `NSPopover` + timer 5min |
 | `PopoverView.swift` | popover SwiftUI com as duas seções |
+| `ClaudeSession.swift` / `PermissionEvent.swift` / `TurnEndEvent.swift` | parse do registro de sessões e dos dois eventos de hook (permissão, fim de turno) |
+| `SessionFiles.swift` / `SessionTracker.swift` | leitura das pastas do registro + inbox do hook; máquina de estado (quem terminou, quem precisa de você) |
+| `SessionText.swift` / `SessionNotices.swift` | textos das linhas; quais notificações postar ou remover |
+| `SessionMonitor.swift` / `SessionWatcher.swift` / `ProcessProbe.swift` | observa as pastas + timer de 5 s; confere se o pid está vivo e pega a tty |
+| `SessionNotifier.swift` / `ITermBridge.swift` / `SessionsSection.swift` | notificação + som; foca a aba do iTerm2 pela tty; seção do popover |
 | `main.swift` | `NSApplication` em modo `.accessory` (sem ícone no Dock) |
 
 ## Privacidade & ressalvas
@@ -146,6 +207,9 @@ Estrutura do código:
 - O app **não** é assinado/notarizado pra distribuição (compile você mesmo).
 - Se uma linha mostrar `token expirado`, abra o Claude Code / rode `codex` uma vez pro CLI
   renovar o token.
+- Sessões ficam só no Mac. O app lê `sessions/<pid>.json`, nunca o `.key` ao lado (guarda um
+  token), e a inbox do hook. Do transcript lê só a data de modificação, nunca o conteúdo. Nada sai
+  do Mac.
 
 ## Relacionados / alternativas
 

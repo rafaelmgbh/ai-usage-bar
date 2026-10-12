@@ -83,12 +83,68 @@ Every account is queried with its own token and the usage comes back from whiche
 authenticated, so it can't be attributed to the wrong one. From 3 rows on, the font and
 bars shrink to fit the menu bar's fixed height.
 
+### Compact menu bar
+
+By default the menu bar shows just a gauge icon with a status dot: the worst level across every
+monitor that is switched on (usage windows and balances alike).
+
+| Dot | Meaning |
+|---|---|
+| green | everything under 80% and balances above their alert |
+| orange | some window at 80% or more, or a balance below its alert |
+| red | some window at 95% or more, or a balance at zero |
+| gray | no data yet, a monitor that failed (expired token), or everything off |
+
+A monitor that failed counts as gray unless its last known number was already orange or red. Hover
+the icon for the numbers. Of the sessions block, only `● N` (waiting for you) is shown. Turn
+**Barra compacta** off in the popover to get the per-account bars back.
+
 ### Turn monitors on/off
 
 Every section in the popover has a switch. Turning a monitor off hides its menu bar row and stops
 querying it (a Claude account off = no request). The choice is remembered across restarts;
 turning it back on refreshes that monitor right away. With everything off the menu bar shows a
 dim `AI` so you can still open the popover.
+
+### Claude Code sessions
+
+The **Sessions** section (top of the popover) lists every interactive Claude Code session of the
+configured accounts: working, free, or waiting for you (a permission or a question), and for how
+long. The menu bar gets a small block to the right of the bars, with `▶ N` working and `● N`
+(orange) needing you. The block disappears when both are zero. When a session finishes a turn of
+10 s or more, or needs you, you get a macOS notification with sound. Clicking it (or the row)
+focuses that exact iTerm2 tab. You get no notification for the tab you're already looking at, nor
+for a session running inside an app that already notifies on its own (today,
+[Clark](https://github.com/rafaelmgbh/clark)): it would be a second notice of the same event. The
+session still shows in the popover list.
+
+State comes from the registry Claude Code keeps in `<configDir>/sessions/<pid>.json`. It's an
+internal format: if an update changes it, the section says so instead of guessing. Two things
+don't show up there, so each needs one hook in `~/.claude/settings.json`: a plain permission
+prompt, and a turn that ends while a subagent or workflow is still running in the background (the
+session stays `busy`). You add them by hand, once, because the app never edits your settings:
+
+```json
+"Notification": [
+  { "matcher": "permission_prompt|elicitation_dialog",
+    "hooks": [{ "type": "command",
+      "command": "d=\"$HOME/.local/state/ai-usage-bar/inbox\"; mkdir -p \"$d\" && chmod 700 \"$d\" && t=$(mktemp \"$d/.tmp.XXXXXX\") && cat > \"$t\" && mv \"$t\" \"$d/ev-${t##*.}.json\"; exit 0" }] }
+],
+"Stop": [
+  { "hooks": [{ "type": "command", "async": true,
+      "command": "d=\"$HOME/.local/state/ai-usage-bar/inbox\"; mkdir -p \"$d\" && chmod 700 \"$d\" && s=$(grep -o '\"session_id\" *: *\"[^\"]*\"' | head -n 1) && [ -n \"$s\" ] && t=$(mktemp \"$d/.tmp.XXXXXX\") && printf '{\"hook_event_name\":\"Stop\",%s}' \"$s\" > \"$t\" && mv \"$t\" \"$d/ev-${t##*.}.json\"; find \"$d\" -name 'ev-*.json' -mmin +10 -delete 2>/dev/null; exit 0" }] }
+]
+```
+
+Both hooks only drop an event into a private inbox that the app reads and deletes. The `Stop`
+payload carries Claude's last message, so that hook writes the session id and nothing else. They
+always exit 0 and never block the session. `Stop` fires on every turn, so that hook also deletes
+events older than 10 minutes: the inbox stays small even while the app is closed. Without the
+hooks everything else still works: you only miss those two notices.
+
+macOS asks for two permissions the first time each is needed:
+- **Automation**, to control iTerm2, on the first click;
+- **Notifications**, on the first notice.
 
 ### API balances: DeepSeek and Jev (optional)
 
@@ -132,7 +188,8 @@ Source layout:
 | File | Role |
 |---|---|
 | `AccountsConfig.swift` / `KeychainService.swift` | which accounts/balances to watch + each one's Keychain item name |
-| `MonitorPrefs.swift` | which monitors are switched off (UserDefaults) |
+| `MonitorPrefs.swift` | which monitors are switched off + compact menu bar on/off (UserDefaults) |
+| `StatusLevel.swift` | overall level behind the compact menu bar dot |
 | `Balance.swift` / `JevLedger.swift` | parse the DeepSeek balance; sum Jev spend from its local log |
 | `DeepSeekProbe.swift` | DeepSeek: read API key + `user/balance` |
 | `ClaudeUsage.swift` / `UsageCache.swift` | parse `/api/oauth/usage`, zero windows that already reset; last-usage cache on disk |
@@ -141,6 +198,11 @@ Source layout:
 | `UsageModel.swift` | observable state; refreshes every enabled monitor in parallel |
 | `AppDelegate.swift` | `NSStatusItem` (drawn 2-row image) + `NSPopover` + 5-min timer |
 | `PopoverView.swift` | SwiftUI popover with both sections |
+| `ClaudeSession.swift` / `PermissionEvent.swift` / `TurnEndEvent.swift` | parse the session registry and the two hook events (permission, end of turn) |
+| `SessionFiles.swift` / `SessionTracker.swift` | read registry folders + hook inbox; session state machine (who finished, who needs you) |
+| `SessionText.swift` / `SessionNotices.swift` | row texts; which notifications to post or remove |
+| `SessionMonitor.swift` / `SessionWatcher.swift` / `ProcessProbe.swift` | watch the folders + 5 s timer; check the pid is alive and get its tty |
+| `SessionNotifier.swift` / `ITermBridge.swift` / `SessionsSection.swift` | notifications + sound; focus the iTerm2 tab by tty; popover section |
 | `main.swift` | `NSApplication` in `.accessory` mode (no Dock icon) |
 
 ## Privacy & caveats
@@ -152,6 +214,9 @@ Source layout:
 - The app is **not** signed/notarized for distribution (build it yourself).
 - If a row shows `token expired`, just open Claude Code / run `codex` once so the CLI refreshes
   the token.
+- Sessions are local only. The app reads `sessions/<pid>.json`, never the `.key` file next to it
+  (it holds a token), plus the hook inbox. Of the transcript it reads only the modification time,
+  never the content. Nothing leaves the Mac.
 
 ## Related / alternatives
 

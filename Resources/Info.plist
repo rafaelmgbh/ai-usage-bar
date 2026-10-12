@@ -22,5 +22,7 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>MIT. Inspired by oauramos/claude-usage-stick.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Para focar a aba do iTerm da sessão do Claude Code.</string>
 </dict>
 </plist>

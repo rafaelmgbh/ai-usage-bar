@@ -42,6 +42,8 @@ final class UsageModel: ObservableObject {
 
     /// Ids (`MonitorID`) dos monitores desligados pelo usuário.
     @Published private(set) var disabled: Set<String>
+    /// Menubar compacta (ícone + bolinha) em vez das barras por conta.
+    @Published private(set) var compactMenubar: Bool
 
     @Published var lastUpdated: Date?
     @Published var isLoading = false
@@ -58,9 +60,16 @@ final class UsageModel: ObservableObject {
             AccountUsage(account: $0, usage: saved[$0.keychainService]?.rolledOver(now: Date()))
         }
         self.disabled = prefs.disabled
+        self.compactMenubar = prefs.compactMenubar
     }
 
     func isEnabled(_ id: String) -> Bool { !disabled.contains(id) }
+
+    func setCompactMenubar(_ on: Bool) {
+        guard compactMenubar != on else { return }
+        prefs.setCompactMenubar(on)
+        compactMenubar = on
+    }
 
     /// Liga/desliga um monitor. Religar consulta só ele na hora — esperar o
     /// próximo ciclo de 5 min deixaria a seção vazia ou com número velho.
@@ -89,6 +98,7 @@ final class UsageModel: ObservableObject {
         case MonitorID.codex: await refreshCodex()
         case MonitorID.deepseek: await refreshDeepSeek()
         case MonitorID.jev: await refreshJev()
+        case MonitorID.sessions: return   // sem rede: quem cuida é o SessionMonitor
         default: await refreshClaude(only: id)
         }
     }
