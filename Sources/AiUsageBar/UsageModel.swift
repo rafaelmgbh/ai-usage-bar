@@ -42,7 +42,7 @@ final class UsageModel: ObservableObject {
 
     /// Ids (`MonitorID`) dos monitores desligados pelo usuário.
     @Published private(set) var disabled: Set<String>
-    /// Menubar compacta (ícone + bolinha) em vez das barras por conta.
+    /// Menubar compacta (ícone na cor do nível) em vez das barras por conta.
     @Published private(set) var compactMenubar: Bool
 
     @Published var lastUpdated: Date?

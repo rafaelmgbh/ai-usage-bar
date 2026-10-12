@@ -1,6 +1,6 @@
 import Foundation
 
-/// Nível geral que a menubar compacta resume numa bolinha. A ordem dos casos é
+/// Nível geral que a menubar compacta resume na cor do ícone. A ordem dos casos é
 /// a prioridade: alarme conhecido ganha de "não sei", e "não sei" ganha de
 /// verde — com um monitor sem resposta não dá pra afirmar que está tudo bem.
 public enum StatusLevel: Int, Comparable, Sendable {

@@ -20,7 +20,7 @@ public final class MonitorPrefs {
 
     private let defaults: UserDefaults
     public private(set) var disabled: Set<String>
-    /// Menubar só com ícone + bolinha de nível; `false` volta às barras por conta.
+    /// Menubar só com o ícone na cor do nível; `false` volta às barras por conta.
     public private(set) var compactMenubar: Bool
 
     public init(defaults: UserDefaults = .standard) {

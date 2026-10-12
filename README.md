@@ -14,7 +14,7 @@ Codex  5h▕███░░░░▏ 7d▕░░░░░░░▏
 
 - Two rows (Claude + Codex), two bars each: **5h** rolling window and **7d** window.
 - Bars fill with **% used** and change color: green &lt;80%, orange ≥80%, red ≥95%.
-- Hover for exact `%` + reset time; click for a popover with the full breakdown.
+- Click for a popover with the exact `%`, reset time and the full breakdown.
 - No dashboards, no extra login — it reuses the tokens your CLIs already store.
 
 > Inspired by the data-collection recipe of
@@ -85,17 +85,17 @@ bars shrink to fit the menu bar's fixed height.
 
 ### Compact menu bar
 
-By default the menu bar shows just a gauge icon with a status dot: the worst level across every
+By default the menu bar shows just one icon painted in a status color: the worst level across every
 monitor that is switched on (usage windows and balances alike).
 
-| Dot | Meaning |
+| Color | Meaning |
 |---|---|
 | green | everything under 80% and balances above their alert |
 | orange | some window at 80% or more, or a balance below its alert |
 | red | some window at 95% or more, or a balance at zero |
 | gray | no data yet, a monitor that failed (expired token), or everything off |
 
-A monitor that failed counts as gray unless its last known number was already orange or red. Hover
+A monitor that failed counts as gray unless its last known number was already orange or red. Click
 the icon for the numbers. Of the sessions block, only `● N` (waiting for you) is shown. Turn
 **Barra compacta** off in the popover to get the per-account bars back.
 
@@ -148,7 +148,7 @@ macOS asks for two permissions the first time each is needed:
 
 ### API balances: DeepSeek and Jev (optional)
 
-Balances show up in the popover and the tooltip only — they are amounts, not percentages, so they
+Balances show up in the popover only — they are amounts, not percentages, so they
 stay out of the menu bar. Each one is opt-in in `accounts.json`:
 
 ```json
@@ -189,7 +189,7 @@ Source layout:
 |---|---|
 | `AccountsConfig.swift` / `KeychainService.swift` | which accounts/balances to watch + each one's Keychain item name |
 | `MonitorPrefs.swift` | which monitors are switched off + compact menu bar on/off (UserDefaults) |
-| `StatusLevel.swift` | overall level behind the compact menu bar dot |
+| `StatusLevel.swift` | overall level behind the compact menu bar icon color |
 | `Balance.swift` / `JevLedger.swift` | parse the DeepSeek balance; sum Jev spend from its local log |
 | `DeepSeekProbe.swift` | DeepSeek: read API key + `user/balance` |
 | `ClaudeUsage.swift` / `UsageCache.swift` | parse `/api/oauth/usage`, zero windows that already reset; last-usage cache on disk |

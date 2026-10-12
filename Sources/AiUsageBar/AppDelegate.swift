@@ -27,7 +27,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let btn = statusItem.button {
             btn.imagePosition = .imageOnly
             btn.image = statusImage(placeholder: true)
-            btn.toolTip = "carregando…"
             btn.action = #selector(togglePopover)
             btn.target = self
         }
@@ -100,15 +99,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessions.setRunning(on)
     }
 
-    // MARK: - Menubar (compacta: ícone + bolinha; ou uma linha por conta ligada)
+    // MARK: - Menubar (compacta: ícone na cor do nível; ou uma linha por conta ligada)
 
     private func updateStatusItem() {
         guard let btn = statusItem.button else { return }
         btn.image = statusImage(placeholder: false)
-        btn.toolTip = buildTooltip()
     }
 
-    /// No placeholder (antes do 1º refresh) a bolinha fica cinza e o bloco de sessões some.
+    /// No placeholder (antes do 1º refresh) o ícone fica cinza e o bloco de sessões some.
     private func statusImage(placeholder: Bool) -> NSImage {
         if model.compactMenubar {
             return Self.drawCompactImage(level: placeholder ? .unknown : overallLevel,
@@ -118,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     badge: placeholder ? nil : sessionBadge)
     }
 
-    /// Cor da bolinha: o pior nível entre os monitores ligados, saldos inclusive.
+    /// Cor do ícone: o pior nível entre os monitores ligados, saldos inclusive.
     private var overallLevel: StatusLevel {
         var monitors = enabledClaude.map { acc -> StatusLevel in
             let u = acc.usage
@@ -180,80 +178,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // abrir o popover pra religar.
         if rows.isEmpty { rows = [Row(brand: "AI", cells: [], dim: true)] }
         return rows
-    }
-
-    private func buildTooltip() -> String {
-        var out = [String]()
-        var names = enabledClaude.map(\.label) + ["Codex"]
-        if model.config.deepseek != nil { names.append("DeepSeek") }
-        let pad = names.map(\.count).max() ?? 0
-
-        for acc in enabledClaude {
-            let name = acc.label.padding(toLength: pad, withPad: " ", startingAt: 0)
-            if let u = acc.usage {
-                let windows = [("5h", u.fiveHour), ("7d", u.sevenDay)]
-                    .compactMap { label, w in w.map { (label, $0) } }
-                    + u.scoped.map { ($0.label, $0.window) }
-                var l = "\(name)  " + windows.map { label, w in
-                    String(format: "%@ %.0f%% %@", label, w.percent, resetText(w.resetEpoch))
-                }.joined(separator: "  ·  ")
-                if let e = acc.error { l += "   ⚠︎ \(short(e)) (último dado às \(hourMinute(u.fetchedAt)))" }
-                out.append(l)
-            } else if let e = acc.error {
-                out.append("\(name)  ⚠︎ \(short(e))")
-            }
-        }
-
-        if model.isEnabled(MonitorID.codex) {
-            let codexName = "Codex".padding(toLength: pad, withPad: " ", startingAt: 0)
-            if let c = model.codexUsage {
-                var l = String(format: "%@  5h %.0f%% %@  ·  7d %.0f%% %@",
-                               codexName,
-                               c.fiveHourPercent, resetText(c.fiveHourResetEpoch),
-                               c.weeklyPercent, resetText(c.weeklyResetEpoch))
-                if let e = model.codexError { l += "   ⚠︎ \(short(e))" }
-                out.append(l)
-            } else if let e = model.codexError {
-                out.append("\(codexName)  ⚠︎ \(short(e))")
-            }
-        }
-
-        if model.config.deepseek != nil, model.isEnabled(MonitorID.deepseek) {
-            let name = "DeepSeek".padding(toLength: pad, withPad: " ", startingAt: 0)
-            if let b = model.deepseek, let p = b.primary {
-                var l = "\(name)  \(Money.format(p.total, currency: p.currency))"
-                if !b.isAvailable { l += "  (indisponível)" }
-                if let e = model.deepseekError { l += "   ⚠︎ \(e)" }
-                out.append(l)
-            } else if let e = model.deepseekError {
-                out.append("\(name)  ⚠︎ \(e)")
-            }
-        }
-
-        if model.config.jev != nil, model.isEnabled(MonitorID.jev) {
-            let name = "Jev".padding(toLength: pad, withPad: " ", startingAt: 0)
-            if let s = model.jev {
-                let month = "mês \(Money.format(s.monthUSD, currency: "USD"))"
-                var l = s.balanceUSD.map { "\(name)  saldo ~\(Money.format($0, currency: "USD"))  ·  \(month)" }
-                    ?? "\(name)  \(month)"
-                if let e = model.jevError { l += "   ⚠︎ \(e)" }
-                out.append(l)
-            } else if let e = model.jevError {
-                out.append("\(name)  ⚠︎ \(e)")
-            }
-        }
-
-        // Horário absoluto: o tooltip só é refeito quando algo muda, e "há 2 min" envelheceria.
-        if model.isEnabled(MonitorID.sessions), !sessions.rows.isEmpty {
-            if !out.isEmpty { out.append("") }
-            out += sessions.rows.map { "\($0.name)  \($0.state.label) desde \(hourMinute($0.since))" }
-        }
-
-        return out.isEmpty ? "carregando…" : out.joined(separator: "\n")
-    }
-
-    private func short(_ e: String) -> String {
-        e.contains("token expirado") ? "token expirado" : e
     }
 
     // MARK: - Desenho
@@ -347,40 +271,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static let compactSymbol = NSImage(
-        systemSymbolName: "gauge.medium", accessibilityDescription: "Uso do plano"
-    )?.withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+    /// Raios desiguais (ângulo em graus, comprimento relativo ao raio). Desenho
+    /// próprio: lembra o símbolo do Claude sem usar o arquivo oficial.
+    private static let burstRays: [(angle: CGFloat, length: CGFloat)] = [
+        (4, 1.00), (33, 0.80), (62, 0.96), (91, 0.84), (119, 1.00), (151, 0.78),
+        (182, 0.95), (211, 0.82), (239, 1.00), (271, 0.86), (300, 0.93), (331, 0.79),
+    ]
 
-    /// Medidor com a bolinha do nível geral no canto; "● N" ao lado só quando
-    /// há sessão esperando por você.
+    /// Raios pintados na cor do nível geral; "● N" ao lado só quando há sessão
+    /// esperando por você.
     private static func drawCompactImage(level: StatusLevel, needsYou: Int) -> NSImage {
         let h: CGFloat = 24
-        let dot: CGFloat = 7
-        let iconSize = compactSymbol?.size ?? NSSize(width: 16, height: 16)
-        let iconRect = NSRect(x: 1, y: (h - iconSize.height) / 2,
-                              width: iconSize.width, height: iconSize.height)
-        let dotRect = NSRect(x: iconRect.maxX - 4.5, y: iconRect.minY - 1, width: dot, height: dot)
+        let radius: CGFloat = 8.8
+        let stroke: CGFloat = 2
+        let center = NSPoint(x: radius + stroke / 2 + 1, y: h / 2)
 
         let badge = needsYou > 0 ? SessionBadge(working: 0, needsYou: needsYou) : nil
-        var width = dotRect.maxX
+        var width = center.x + radius + stroke / 2
         let badgeX = width + badgeGap
         width += badgeWidth(badge) + 1
 
         return NSImage(size: NSSize(width: width, height: h), flipped: false) { _ in
-            guard let ctx = NSGraphicsContext.current else { return false }
-            // Camada à parte: o sourceIn tinge só o símbolo e o destinationOut abre
-            // o recorte em volta da bolinha sem furar o que está atrás da imagem.
-            ctx.cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
-            compactSymbol?.draw(in: iconRect)
-            NSColor.labelColor.setFill()
-            iconRect.fill(using: .sourceIn)
-            ctx.compositingOperation = .destinationOut
-            NSBezierPath(ovalIn: dotRect.insetBy(dx: -1.2, dy: -1.2)).fill()
-            ctx.compositingOperation = .sourceOver
-            ctx.cgContext.endTransparencyLayer()
-
-            levelColor(level).setFill()
-            NSBezierPath(ovalIn: dotRect).fill()
+            let burst = NSBezierPath()
+            burst.lineWidth = stroke
+            burst.lineCapStyle = .round
+            for ray in burstRays {
+                let a = ray.angle * .pi / 180
+                burst.move(to: center)
+                burst.line(to: NSPoint(x: center.x + cos(a) * radius * ray.length,
+                                       y: center.y + sin(a) * radius * ray.length))
+            }
+            levelColor(level).setStroke()
+            burst.stroke()
 
             if let badge {
                 drawBadgeLine(count: badge.needsYou, x: badgeX, midY: h / 2, color: .systemOrange, round: true)

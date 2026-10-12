@@ -14,7 +14,7 @@ Codex  5h▕███░░░░▏ 7d▕░░░░░░░▏
 
 - Duas linhas (Claude + Codex), duas barras cada: janela móvel de **5h** e janela de **7d**.
 - Barra enche com **% usado** e muda de cor: verde &lt;80%, laranja ≥80%, vermelho ≥95%.
-- Passe o mouse pro `%` exato + reset; clique pro popover com o detalhamento.
+- Clique pro popover com o `%` exato, o reset e o detalhamento.
 - Sem dashboards, sem login extra — reusa os tokens que os CLIs já guardam.
 
 > Inspirado na receita de coleta do
@@ -79,18 +79,18 @@ pra caber na altura fixa da menubar.
 
 ### Menubar compacta
 
-Por padrão a menubar mostra só um ícone de medidor com uma bolinha: o pior nível entre todos os
+Por padrão a menubar mostra só um ícone pintado na cor do nível: o pior nível entre todos os
 monitores ligados (janelas de uso e saldos).
 
-| Bolinha | Significado |
+| Cor | Significado |
 |---|---|
 | verde | tudo abaixo de 80% e saldos acima do alerta |
 | laranja | alguma janela em 80% ou mais, ou saldo abaixo do alerta |
-| vermelha | alguma janela em 95% ou mais, ou saldo zerado |
+| vermelho | alguma janela em 95% ou mais, ou saldo zerado |
 | cinza | sem dado ainda, monitor que falhou (token expirado) ou tudo desligado |
 
 Monitor que falhou conta como cinza, a não ser que o último número dele já fosse laranja ou
-vermelho. Passe o mouse no ícone pra ver os números. Do bloco de sessões aparece só o `● N`
+vermelho. Clique no ícone pra ver os números. Do bloco de sessões aparece só o `● N`
 (esperando por você). Desligue **Barra compacta** no popover pra voltar às barras por conta.
 
 ### Ligar/desligar monitores
@@ -141,7 +141,7 @@ O macOS pede duas permissões, cada uma na primeira vez que for necessária:
 
 ### Saldos de API: DeepSeek e Jev (opcional)
 
-Saldos aparecem só no popover e no tooltip — são valores, não %, então ficam fora da menubar. Cada
+Saldos aparecem só no popover — são valores, não %, então ficam fora da menubar. Cada
 um é opt-in no `accounts.json`:
 
 ```json
@@ -182,7 +182,7 @@ Estrutura do código:
 |---|---|
 | `AccountsConfig.swift` / `KeychainService.swift` | quais contas/saldos monitorar + nome do item de Keychain de cada uma |
 | `MonitorPrefs.swift` | quais monitores estão desligados + menubar compacta ligada/desligada (UserDefaults) |
-| `StatusLevel.swift` | nível geral por trás da bolinha da menubar compacta |
+| `StatusLevel.swift` | nível geral por trás da cor do ícone da menubar compacta |
 | `Balance.swift` / `JevLedger.swift` | parse do saldo DeepSeek; soma do gasto do Jev no log local |
 | `DeepSeekProbe.swift` | DeepSeek: lê a chave + `user/balance` |
 | `ClaudeUsage.swift` / `UsageCache.swift` | parse do `/api/oauth/usage`, zera janela que já renovou; cache do último uso em disco |

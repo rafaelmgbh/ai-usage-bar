@@ -83,7 +83,7 @@ struct PopoverView: View {
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .labelsHidden()
-                    .help("Ligado: só ícone e bolinha de nível na barra de menus. Desligado: barras por conta.")
+                    .help("Ligado: só o ícone, na cor do nível, na barra de menus. Desligado: barras por conta.")
             }
 
             HStack(spacing: 10) {
